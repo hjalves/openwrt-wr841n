@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+image=opencode-openwrt-router-ssh:local
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+state_dir=${XDG_STATE_HOME:-"$HOME/.local/state"}/openwrt-router-ssh
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo 'Docker is required.' >&2
+    exit 1
+fi
+
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo 'Building the SSH client image (first use only)...' >&2
+    docker build --network host -t "$image" "$script_dir" >&2
+fi
+
+umask 077
+mkdir -p "$state_dir"
+touch "$state_dir/known_hosts"
+
+if [ -t 0 ] && [ -t 1 ]; then
+    tty_flag=-t
+else
+    tty_flag=
+fi
+
+exec docker run --rm -i ${tty_flag:+"$tty_flag"} --network host \
+    --mount "type=bind,src=$state_dir,dst=/root/.ssh" \
+    "$image" \
+    -o KexAlgorithms=diffie-hellman-group14-sha1 \
+    -o HostKeyAlgorithms=ssh-rsa \
+    -o StrictHostKeyChecking=ask \
+    -o UpdateHostKeys=no \
+    -o PubkeyAuthentication=no \
+    -o PreferredAuthentications=password \
+    -o ConnectTimeout=10 \
+    root@192.168.0.254 "$@"
