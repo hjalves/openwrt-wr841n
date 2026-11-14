@@ -1,0 +1,10 @@
+{
+  "hello-example": {
+    "description": "Allow calling the example hello method",
+    "read": {
+      "ubus": {
+        "example.hello": ["say"]
+      }
+    }
+  }
+}
