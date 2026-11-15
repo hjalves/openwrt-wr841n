@@ -58,8 +58,8 @@
 #define STATE_VERSION  2u  /* v2: renumbered name/info sources */
 
 /* How a device was seen (bit flags). */
-enum { V_ARP = 1, V_DHCP = 2, V_MDNS = 4, V_SSDP = 8, V_NBNS = 16, V_WIFI = 32, V_SELF = 64 };
-static const char *const via_names[] = { "arp", "dhcp", "mdns", "ssdp", "netbios", "wifi", "self" };
+enum { V_ARP = 1, V_DHCP = 2, V_MDNS = 4, V_SSDP = 8, V_NBNS = 16, V_WIFI = 32, V_SELF = 64, V_BCAST = 128 };
+static const char *const via_names[] = { "arp", "dhcp", "mdns", "ssdp", "netbios", "wifi", "self", "broadcast" };
 
 /* Name sources, in increasing priority. */
 /* Values are stored in the state file, so new sources are appended; their
@@ -748,15 +748,18 @@ static void parse_arp(const uint8_t *p, size_t len)
 /* Raw socket                                                         */
 /* ------------------------------------------------------------------ */
 
-/* tcpdump -dd 'arp or (ip and udp and (port 67 or port 68 or port 5353 or port 1900 or port 137))' */
+/* tcpdump -dd 'arp or (ip and udp and (port 67 or port 68 or port 5353 or port 1900 or port 137))
+ *              or (ether broadcast and ip)' */
 static struct sock_filter bpf_code[] = {
-	{ 0x28, 0, 0, 0x0000000c }, { 0x15, 18, 0, 0x00000806 }, { 0x15, 0, 18, 0x00000800 },
-	{ 0x30, 0, 0, 0x00000017 }, { 0x15, 0, 16, 0x00000011 }, { 0x28, 0, 0, 0x00000014 },
-	{ 0x45, 14, 0, 0x00001fff }, { 0xb1, 0, 0, 0x0000000e }, { 0x48, 0, 0, 0x0000000e },
+	{ 0x28, 0, 0, 0x0000000c }, { 0x15, 24, 0, 0x00000806 }, { 0x15, 0, 17, 0x00000800 },
+	{ 0x30, 0, 0, 0x00000017 }, { 0x15, 0, 15, 0x00000011 }, { 0x28, 0, 0, 0x00000014 },
+	{ 0x45, 13, 0, 0x00001fff }, { 0xb1, 0, 0, 0x0000000e }, { 0x48, 0, 0, 0x0000000e },
+	{ 0x15, 16, 0, 0x00000043 }, { 0x15, 15, 0, 0x00000044 }, { 0x15, 14, 0, 0x000014e9 },
+	{ 0x15, 13, 0, 0x0000076c }, { 0x15, 12, 0, 0x00000089 }, { 0x48, 0, 0, 0x00000010 },
 	{ 0x15, 10, 0, 0x00000043 }, { 0x15, 9, 0, 0x00000044 }, { 0x15, 8, 0, 0x000014e9 },
-	{ 0x15, 7, 0, 0x0000076c }, { 0x15, 6, 0, 0x00000089 }, { 0x48, 0, 0, 0x00000010 },
-	{ 0x15, 4, 0, 0x00000043 }, { 0x15, 3, 0, 0x00000044 }, { 0x15, 2, 0, 0x000014e9 },
-	{ 0x15, 1, 0, 0x0000076c }, { 0x15, 0, 1, 0x00000089 }, { 0x6, 0, 0, 0x00040000 },
+	{ 0x15, 7, 0, 0x0000076c }, { 0x15, 6, 0, 0x00000089 }, { 0x20, 0, 0, 0x00000002 },
+	{ 0x15, 0, 5, 0xffffffff }, { 0x28, 0, 0, 0x00000000 }, { 0x15, 0, 3, 0x0000ffff },
+	{ 0x28, 0, 0, 0x0000000c }, { 0x15, 0, 1, 0x00000800 }, { 0x6, 0, 0, 0x00040000 },
 	{ 0x6, 0, 0, 0x00000000 },
 };
 
@@ -785,11 +788,18 @@ static void handle_frame(const uint8_t *f, size_t len)
 	ip = f + 14;
 	ihl = (size_t)(ip[0] & 0x0f) * 4;
 	iplen = (size_t)(ip[2] << 8 | ip[3]);
-	if ((ip[0] >> 4) != 4 || ihl < 20 || ip[9] != 17 || iplen < ihl + 8 || 14 + iplen > len)
+	if ((ip[0] >> 4) != 4 || ihl < 20 || iplen < ihl || 14 + iplen > len)
+		return;
+	memcpy(&src_ip, ip + 12, 4);
+	/* Any IPv4 broadcast tells us its sender exists (devices that ignore ARP
+	 * and ping often still broadcast announcements). Contents aren't read. */
+	if (f[0] == 0xff && f[1] == 0xff && f[2] == 0xff && f[3] == 0xff && f[4] == 0xff && f[5] == 0xff &&
+	    mac_valid(src_mac) && ip_in_lan(src_ip))
+		dev_set_ip(dev_seen(src_mac, V_BCAST), src_ip);
+	if (ip[9] != 17 || iplen < ihl + 8)
 		return;
 	if ((ip[6] & 0x3f) || ip[7])
 		return;  /* fragments */
-	memcpy(&src_ip, ip + 12, 4);
 	udp = ip + ihl;
 	sport = (uint16_t)(udp[0] << 8 | udp[1]);
 	dport = (uint16_t)(udp[2] << 8 | udp[3]);
@@ -1418,7 +1428,7 @@ static int m_devices(struct ubus_context *ctx, struct ubus_object *obj,
 		if (d->signal)
 			blobmsg_add_u32(&b, "wifi_signal", (uint32_t)(int32_t)d->signal);
 		v = blobmsg_open_array(&b, "seen_via");
-		for (k = 0; k < 7; k++)
+		for (k = 0; k < 8; k++)
 			if (d->via & (1u << k))
 				blobmsg_add_string(&b, NULL, via_names[k]);
 		blobmsg_close_array(&b, v);

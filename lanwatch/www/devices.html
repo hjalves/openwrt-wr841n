@@ -110,7 +110,7 @@ function ago(t) {
   return Math.round(s / 86400) + " d ago";
 }
 const fullTime = t => new Date(t * 1000).toLocaleString(undefined, {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
-const VIA = {arp: "ARP", dhcp: "DHCP", mdns: "mDNS", ssdp: "SSDP", netbios: "NetBIOS", wifi: "Wi-Fi", self: "this router"};
+const VIA = {arp: "ARP", dhcp: "DHCP", mdns: "mDNS", ssdp: "SSDP", netbios: "NetBIOS", wifi: "Wi-Fi", self: "this router", broadcast: "broadcast"};
 
 function cell(tr, cls) { const td = tr.insertCell(); if (cls) td.className = cls; return td; }
 function text(el, s, cls) { const e = document.createElement("span"); if (cls) e.className = cls; e.textContent = s; el.appendChild(e); return e; }

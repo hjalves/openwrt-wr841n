@@ -4,7 +4,7 @@ A small "Fing"-like service for the OpenWrt access point. It lists every device 
 
 | | |
 |---|---|
-| Daemon | `lanwatch`, 27 KiB stripped |
+| Daemon | `lanwatch`, 28 KiB stripped |
 | Links to | only libraries already on the router: `libubus`, `libubox`, `libiwinfo`, `libgcc_s`, uClibc |
 | Vendor table | `/usr/share/lanwatch/oui.bin`, 29 KB |
 | Page | `/www/devices.html`, about 12 KB |
@@ -25,6 +25,7 @@ This router is a bridge on the same network segment as every other device (the H
 | mDNS | names a device announces for itself (`MacBook.local`), the `model=` of `_device-info` records, and reverse-lookup answers |
 | SSDP / UPnP | the `SERVER:` header of TVs, consoles and media boxes |
 | NetBIOS | replies to our name queries (Windows names) |
+| Any IPv4 broadcast | that its sender exists, with its MAC and IP. The contents aren't read. Some devices ignore ARP and ping but keep broadcasting announcements; a Fine Offset weather station on this LAN broadcasts to UDP port 59387 every 2 seconds |
 
 The socket asks the kernel for **all-multicast** reception (`PACKET_MR_ALLMULTI`). Without it, multicast for groups nobody on the router has joined (SSDP's 239.255.255.250, for example) is dropped before the socket sees it.
 
@@ -103,6 +104,7 @@ curl -s http://192.168.0.254/ubus -H 'Content-Type: application/json' \
 - **Private MAC addresses:** a phone that resets its private address appears as a new device. Fing has the same problem.
 - **Unnamed devices:** a device that never says its name (many IoT devices) stays "Unknown". The Huawei's DHCP list has every name, but needs its admin login, which this deliberately doesn't use.
 - **Shared MACs:** devices that share a MAC address are merged into one entry; the IP shows whichever was seen last. This VM is an example: Wi-Fi bridging gives it its host Mac's MAC.
+- **Silent devices:** a device that never sends anything (no ARP, no broadcast, no DHCP) can't be seen at all.
 - **IPv4 only.** No port scanning.
 
 ## Build and install
@@ -161,6 +163,13 @@ rm -r /usr/sbin/lanwatch /usr/share/lanwatch /etc/init.d/lanwatch /etc/config/la
     - the first version missed every search reply, because they come from random ports, as a capture of the real Samsung TV confirmed. They're now read on the UDP socket;
     - a 16 KB buffer was being stored in the binary, which grew to 44 KiB; it's now reserved at startup instead.
   - **On the LAN:** the Samsung TV became `[TV] Samsung` / `UE32K5500`, and the Huawei `Huawei router`.
+- **Broadcast sightings** (same test bed):
+  - a device that ignores ARP but broadcasts was listed with its IP;
+  - a broadcaster from another subnet got no IP recorded;
+  - multicast to unrelated groups was ignored;
+  - discovery and fuzz tests still pass with no sanitizer reports.
+
+  On the LAN, this found the weather station at `192.168.0.200` (`98:cd:ac:22:63:32`, Espressif). It answers neither ARP nor ping, so neither lanwatch's sweep nor `nmap` had found it. Its announcement also carries its name (`EasyWeather-WIFI6332`), but decoding that format would be specific to one maker's stations, so lanwatch doesn't.
 - **On the LAN:** results compared with an `nmap -sn -PR -T3` ARP scan from the VM.
   - Every device `nmap` found was also found by lanwatch.
   - lanwatch also found a Wi-Fi client that never answered ARP, through this AP's station list.
