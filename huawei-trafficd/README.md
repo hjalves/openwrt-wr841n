@@ -145,7 +145,7 @@ Daemon options: `huawei-trafficd -h`. It logs to syslog (`logread | grep huawei-
 make -C huawei-trafficd
 ```
 
-This uses the OpenWrt 15.05.1 SDK in `../toolchain/`, as described in [`../ubus-hello/README.md`](../ubus-hello/README.md) and [`../hello-http/README.md`](../hello-http/README.md) (download link and SHA-256).
+This uses the OpenWrt 15.05.1 SDK in `../toolchain/`; see [Building for the router](../README.md#building-for-the-router) for the download link, SHA-256 and setup.
 
 **On an ARM64 build host** (such as the Arch Linux ARM VM): the SDK's compiler is an x86-64 Linux program. It runs under `qemu-user` binfmt emulation, given an x86-64 glibc runtime:
 
@@ -156,7 +156,7 @@ sudo pacman -S qemu-user qemu-user-binfmt
 QEMU_LD_PREFIX=/opt/x86_64-root make -C huawei-trafficd
 ```
 
-Rebuilding `ubus-hello` this way reproduced the committed binary, so the emulated toolchain behaves like a native one.
+Rebuilding an earlier example program this way reproduced its previously built binary byte for byte, so the emulated toolchain behaves like a native one.
 
 ## Install
 

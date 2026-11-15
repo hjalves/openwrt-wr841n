@@ -43,7 +43,7 @@ curl -sS http://192.168.0.254/ubus \
 }
 ```
 
-At the snapshot this safe permission check returned `[0,{"access":false}]`. A successful ubus call typically returns `"result":[0,{...}]`, where `0` is the ubus status. Authorization or protocol failures may instead appear as a JSON-RPC `error` even with HTTP status 200. `session.login` can issue a token; see [`README.md`](README.md) for the SSH-tunneled example and ACL requirements.
+At the snapshot this safe permission check returned `[0,{"access":false}]`. A successful ubus call typically returns `"result":[0,{...}]`, where `0` is the ubus status. Authorization or protocol failures may instead appear as a JSON-RPC `error` even with HTTP status 200. `session.login` can issue a token for an authenticated session; each object/method it may call still needs an rpcd ACL (files in `/usr/share/rpcd/acl.d/`). Send passwords and tokens only over a trusted network or through `router-ssh/tunnel`, because the router's HTTP is unencrypted.
 
 The advertised parameter types below come from `ubus -v list`. They are not a complete specification of required fields, allowed values, return data, or side effects. An empty signature means no parameters were **advertised**, not necessarily that the method is safe or accepts no other fields.
 
@@ -165,9 +165,9 @@ On this router, the observed anonymous ACL allowed `session.login` and `session.
 | `confirm`, `rollback` | `ubus_rpc_session`: string |
 | `reload_config` | none |
 
-## Custom example
+## Objects added by this project
 
-When this directory's `ubus-hello` process is running, it adds `example.hello` with a `say` method. It was not running during the current snapshot, so it is absent from the list above. HTTP access requires a matching RPC ACL; see [`README.md`](README.md).
+[`huawei-trafficd`](../huawei-trafficd/README.md) adds `huawei.traffic` (`latest`, `query`, `status`), installed after this snapshot. Its ACL grants those three read-only methods to the anonymous session, so they can be called over HTTP without logging in.
 
 ## Safety
 

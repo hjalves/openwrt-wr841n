@@ -7,7 +7,7 @@ Read-only SSH inventory on 2026-11-14, after the DDNS packages were removed. Thi
 - 32-bit, big-endian MIPS; MIPS32r2, 24Kc CPU; Linux 3.18.23.
 - OpenWrt 15.05.1 `ar71xx/generic` uses **uClibc 0.9.33.2**, not glibc or musl. Its dynamic loader is `/lib/ld-uClibc.so.0`.
 - No `gcc`, `cc`, `g++`, `make`, `ld`, `ldd`, `readelf`, or `objdump` command was found on the router's PATH, and no C headers or static archives were found in the checked standard library/include directories. Cross-compile on another computer with a matching SDK.
-- The [tested example](hello-http/README.md) uses the OpenWrt 15.05.1 ar71xx SDK and links dynamically against the libraries already on the router. A generic glibc-based MIPS build failed with an illegal instruction; matching the CPU and ABI matters.
+- Programs are built with the OpenWrt 15.05.1 ar71xx SDK (see [Building for the router](../README.md#building-for-the-router)) and link dynamically against the libraries already on the router. A generic glibc-based MIPS build failed with an illegal instruction; matching the CPU and ABI matters.
 - Shared library presence does not imply every feature, header, or API of a newer version is present. Names without version numbers are the observed files, not necessarily development linker symlinks. Sizes and complete symlink targets are in the raw inventory.
 
 ## Installed C shared libraries
