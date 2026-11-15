@@ -3,6 +3,7 @@
 `index.html` replaces the router's default `/www/index.html`, which only redirects to LuCI. It is served at **http://192.168.0.254/** and links to:
 
 - **Router admin:** LuCI at `/cgi-bin/luci`. This LuCI version serves its login form with HTTP status 403; that is normal.
+- **Devices on the network:** the [`lanwatch`](../lanwatch/README.md) page at `/devices.html`. The card shows how many devices are online, known and new.
 - **LTE data usage:** the [`huawei-trafficd`](../huawei-trafficd/README.md) dashboard at `/traffic.html`. The card also shows a one-line summary of the current LTE session, read from the anonymous `huawei.traffic` ubus object. If the daemon isn't running, that line just stays empty.
 
 It is a single 3 KiB file with no external resources, styled like the traffic dashboard, with light and dark mode following the device setting.

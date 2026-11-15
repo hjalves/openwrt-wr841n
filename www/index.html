@@ -40,6 +40,11 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <p>Download, upload and session history from the Huawei LTE router.</p>
       <div class="live" id="live"></div>
     </a>
+    <a class="card" href="/devices.html">
+      <h2>Devices on the network</h2>
+      <p>Everything seen on the LAN: names, makers, when each was first and last seen. New devices are highlighted.</p>
+      <div class="live" id="liveDev"></div>
+    </a>
   </nav>
 </main>
 <script>
@@ -58,6 +63,18 @@ document.getElementById("host").textContent = location.host;
     const d = Math.floor(s.uptime / 86400), h = Math.floor(s.uptime % 86400 / 3600);
     document.getElementById("live").textContent =
       `This session: ${gb(s.download)} down · ${gb(s.upload)} up · connected ${d ? d + "d " : ""}${h}h`;
+  } catch (e) { /* summary is optional */ }
+})();
+(async () => {
+  try {
+    const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: 2, method: "call",
+        params: ["00000000000000000000000000000000", "lanwatch", "status", {}]})});
+    const j = await r.json();
+    if (!j.result || j.result[0] !== 0) return;
+    const s = j.result[1];
+    document.getElementById("liveDev").textContent =
+      `${s.online} online · ${s.devices} known` + (s.new ? ` · ${s.new} new in the last 24 h` : "");
   } catch (e) { /* summary is optional */ }
 })();
 </script>

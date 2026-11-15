@@ -1,0 +1,10 @@
+{
+	"unauthenticated": {
+		"description": "Anonymous read access to the list of devices on the LAN",
+		"read": {
+			"ubus": {
+				"lanwatch": [ "devices", "status" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>Devices on the network</title>
+<link rel="icon" href="data:,">
+<style>
+:root{color-scheme:light;--page:#f9f9f7;--surface:#fcfcfb;--text:#0b0b0b;--text2:#52514e;--muted:#898781;--grid:#e1e0d9;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.05);--accent:#2a78d6;--good:#0ca30c;--offline:#c3c2b7;--critical:#d03b3b}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--text:#f0efec;--text2:#c3c2b7;--grid:#2c2c2a;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.06);--accent:#3987e5;--offline:#5c5b57}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page)}
+main{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);max-width:1200px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:16px}
+h1{font-size:20px;font-weight:600;margin:0}
+.back{display:inline-block;color:var(--text2);text-decoration:none;font-size:13px;margin-bottom:2px}
+.back:hover{color:var(--text);text-decoration:underline}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.status{margin:0;color:var(--text2);font-size:13px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.tile .label{color:var(--text2);font-size:13px}
+.tile .value{font-size:24px;font-weight:600;margin-top:2px}
+.tile .sub{color:var(--muted);font-size:12px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}
+.seg button{border:0;border-right:1px solid var(--border);background:none;color:var(--text2);font:inherit;padding:6px 12px;cursor:pointer}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--wash)}
+.seg button[aria-pressed=true]{color:var(--text);font-weight:600;background:var(--wash)}
+.hint{color:var(--muted);font-size:12px}
+.wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{color:var(--text2);font-weight:600;white-space:nowrap;cursor:pointer;user-select:none}
+th[aria-sort=ascending]::after{content:" ↑"}th[aria-sort=descending]::after{content:" ↓"}
+tr:last-child td{border-bottom:0}
+tr.new td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.st{white-space:nowrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.name{font-weight:600}
+.badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;border:1px solid var(--accent);font-size:11px;font-weight:600;line-height:17px;color:var(--text)}
+.sub2{color:var(--muted);font-size:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:nowrap}
+.unknown{color:var(--muted);font-style:italic;font-weight:400}
+.empty{padding:24px;text-align:center;color:var(--text2)}
+.show-sm{display:none}
+@media (max-width:640px){.tiles{gap:8px}.tile{padding:10px}.tile .value{font-size:19px}.hide-sm{display:none}.show-sm{display:block}.show-sm+br{display:none}th .show-sm{display:inline}}
+</style>
+</head>
+<body>
+<main id="root">
+<header>
+  <div><a class="back" href="/">← Router</a><h1>Devices on the network</h1></div>
+  <p class="status" id="status" role="status">Loading…</p>
+</header>
+
+<section class="tiles" aria-label="Summary">
+  <div class="tile"><div class="label">Online now</div><div class="value" id="tOn">–</div><div class="sub" id="tOnSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Known devices</div><div class="value" id="tAll">–</div><div class="sub">since the list was started</div></div>
+  <div class="tile"><div class="label">New in the last 24 h</div><div class="value" id="tNew">–</div><div class="sub">marked “New” below</div></div>
+</section>
+
+<div class="filters">
+  <div class="seg" id="filters" role="group" aria-label="Show">
+    <button type="button" data-f="all" aria-pressed="true">All</button>
+    <button type="button" data-f="online" aria-pressed="false">Online</button>
+    <button type="button" data-f="new" aria-pressed="false">New</button>
+  </div>
+  <span class="hint">Click a column heading to sort. Refreshes every 30 s.</span>
+</div>
+
+<div class="wrap">
+<table id="tbl">
+  <thead><tr>
+    <th data-k="status" class="hide-sm">Status</th><th data-k="name">Device</th><th data-k="ip" aria-sort="ascending"><span class="hide-sm">IP</span><span class="show-sm">Address</span></th>
+    <th data-k="vendor" class="hide-sm">Vendor</th><th data-k="info" class="hide-sm">Details</th>
+    <th data-k="mac" class="hide-sm">MAC address</th><th data-k="last_seen" class="hide-sm">Last seen</th><th data-k="first_seen" class="hide-sm">First seen</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+</div>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const ANON = "00000000000000000000000000000000";
+let devs = [], filter = "all", sortKey = "ip", sortDir = 1, now = 0;
+
+async function rpc(method) {
+  const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({jsonrpc: "2.0", id: 1, method: "call", params: [ANON, "lanwatch", method, {}]})});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || "RPC error");
+  if (j.result[0] !== 0) throw new Error("ubus status " + j.result[0]);
+  return j.result[1];
+}
+
+const ipNum = ip => ip ? ip.split(".").reduce((a, x) => a * 256 + +x, 0) : Infinity;
+function ago(t) {
+  const s = Math.max(0, now - t);
+  if (s < 90) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " d ago";
+}
+const fullTime = t => new Date(t * 1000).toLocaleString(undefined, {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+const VIA = {arp: "ARP", dhcp: "DHCP", mdns: "mDNS", ssdp: "SSDP", netbios: "NetBIOS", wifi: "Wi-Fi", self: "this router"};
+
+function cell(tr, cls) { const td = tr.insertCell(); if (cls) td.className = cls; return td; }
+function text(el, s, cls) { const e = document.createElement("span"); if (cls) e.className = cls; e.textContent = s; el.appendChild(e); return e; }
+
+function sortVal(d, k) {
+  switch (k) {
+    case "status": return d.online ? 0 : 1;
+    case "ip": return ipNum(d.ip);
+    case "name": return (d.name || "￿").toLowerCase();
+    case "vendor": return (d.vendor || (d.private_mac ? "~private" : "￿")).toLowerCase();
+    case "info": return (d.info || "￿").toLowerCase();
+    case "mac": return d.mac;
+    default: return -(d[k] || 0);  /* times: newest first when ascending */
+  }
+}
+
+function render() {
+  const on = devs.filter(d => d.online).length, fresh = devs.filter(d => d.new).length;
+  $("tOn").textContent = on;
+  $("tOnSub").textContent = devs.length ? `of ${devs.length} known` : " ";
+  $("tAll").textContent = devs.length;
+  $("tNew").textContent = fresh;
+  const rows = devs.filter(d => filter === "all" || (filter === "online" ? d.online : d.new))
+    .sort((a, b) => { const x = sortVal(a, sortKey), y = sortVal(b, sortKey); return (x < y ? -1 : x > y ? 1 : ipNum(a.ip) - ipNum(b.ip)) * sortDir; });
+  const tb = $("tbl").tBodies[0];
+  tb.textContent = "";
+  if (!rows.length) {
+    const td = cell(tb.insertRow(), "empty"); td.colSpan = 8;
+    td.textContent = filter === "new" ? "No new devices in the last 24 hours." : "No devices to show.";
+    return;
+  }
+  for (const d of rows) {
+    const tr = tb.insertRow();
+    if (d.new) tr.className = "new";
+    // status: dot + word, never colour alone
+    let td = cell(tr, "st hide-sm");
+    const dot = text(td, "", "dot"); dot.style.background = d.online ? "var(--good)" : "var(--offline)";
+    text(td, d.online ? "Online" : "Offline");
+    if (d.wifi_signal) { td.appendChild(document.createElement("br")); text(td, `Wi-Fi ${d.wifi_signal} dBm`, "sub2"); }
+    // name (+ New badge, + where the name came from)
+    td = cell(tr);
+    if (d.name) text(td, d.name, "name"); else text(td, "Unknown", "name unknown");
+    if (d.new) { const b = text(td, "New", "badge"); b.title = "First seen " + fullTime(d.first_seen); }
+    {  /* phones: the Status column is hidden, so show status here */
+      const st = text(td, "", "sub2 show-sm"), dd = text(st, "", "dot");
+      dd.style.background = d.online ? "var(--good)" : "var(--offline)";
+      st.appendChild(document.createTextNode((d.online ? "Online" : "Offline · " + ago(d.last_seen)) + (d.wifi_signal ? ` · Wi-Fi ${d.wifi_signal} dBm` : "")));
+    }
+    if (d.info) text(td, d.info, "sub2 show-sm").title = "From " + d.info_source;  /* Details column is hidden on phones */
+    const how = (d.seen_via || []).map(v => VIA[v] || v).join(", ");
+    td.appendChild(document.createElement("br"));
+    text(td, (d.name_source ? `name via ${d.name_source} · ` : "") + `seen via ${how}`, "sub2");
+    td = cell(tr, "num");
+    td.appendChild(document.createTextNode(d.ip || "–"));
+    text(td, d.mac, "sub2 mono show-sm");  /* phones: MAC and vendor columns are hidden */
+    text(td, d.vendor || (d.private_mac ? "Private address" : ""), "sub2 show-sm");
+    td = cell(tr, "hide-sm");
+    if (d.vendor) text(td, d.vendor);
+    else if (d.private_mac) { text(td, "Private address", "unknown"); td.title = "The device uses a randomised (private) MAC address, so its maker can't be told from it."; }
+    else text(td, "–", "unknown");
+    td = cell(tr, "hide-sm");
+    if (d.info) { text(td, d.info); td.title = "From " + d.info_source; } else text(td, "–", "unknown");
+    cell(tr, "mono hide-sm").textContent = d.mac;
+    td = cell(tr, "num hide-sm"); td.textContent = d.online ? (d.seen_via || []).includes("self") ? "now" : ago(d.last_seen) : ago(d.last_seen); td.title = fullTime(d.last_seen);
+    td = cell(tr, "num hide-sm"); td.textContent = fullTime(d.first_seen);
+  }
+}
+
+async function load() {
+  try {
+    const [st, list] = await Promise.all([rpc("status"), rpc("devices")]);
+    now = st.now; devs = list.devices || [];
+    const s = $("status"); s.textContent = "";
+    const swept = st.last_sweep ? `last sweep ${ago(st.last_sweep)}` : "first sweep in progress";
+    s.textContent = `Watching ${st.interface}${st.address ? " (" + st.address + ")" : ""} · ${swept} · every ${Math.round(st.sweep_interval / 60)} min`;
+    render();
+  } catch (e) {
+    $("status").textContent = "Cannot load the device list: " + e.message;
+  }
+}
+
+for (const b of $("filters").children)
+  b.addEventListener("click", () => {
+    filter = b.dataset.f;
+    for (const x of $("filters").children) x.setAttribute("aria-pressed", x === b);
+    render();
+  });
+for (const th of document.querySelectorAll("#tbl th"))
+  th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    sortDir = sortKey === k ? -sortDir : 1; sortKey = k;
+    for (const x of document.querySelectorAll("#tbl th")) x.removeAttribute("aria-sort");
+    th.setAttribute("aria-sort", sortDir > 0 ? "ascending" : "descending");
+    render();
+  });
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
