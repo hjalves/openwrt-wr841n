@@ -6,6 +6,11 @@ Examples:
   ./query.py --from 1h               # last hour
   ./query.py --from 2026-11-15T08:00 --to 2026-11-15T12:00 --format csv
   ./query.py --from 1d --usage       # bytes transferred over the last day
+  ./query.py --from 30d --tier coarse --format csv   # hourly samples, 30 days
+
+History has two tiers: "fine" (every sample, last few days) and "coarse"
+(hourly, up to a year). The default "auto" returns coarse samples older than
+the fine tier, followed by the fine samples.
 """
 
 import argparse
@@ -42,8 +47,8 @@ def parse_time(text):
     return int(dt.datetime.fromisoformat(text).timestamp())
 
 
-def fetch(url, start, end):
-    samples, args = [], {"from": start, "limit": 4000}
+def fetch(url, start, end, tier):
+    samples, args = [], {"from": start, "limit": 4000, "tier": tier}
     if end is not None:
         args["to"] = end
     while True:
@@ -59,10 +64,20 @@ def iso(ts):
 
 
 def usage(samples):
-    """Sum per-interval deltas; a counter drop means a new session started."""
+    """Bytes transferred between consecutive samples, summed.
+
+    Uses the Huawei's lifetime totals, which keep counting across LTE
+    reconnects. If a total ever goes backwards (counters cleared), falls back
+    to the session counter, treating a drop as a new session.
+    """
     def total(key):
-        return sum(b[key] - a[key] if b[key] >= a[key] else b[key]
-                   for a, b in zip(samples, samples[1:]))
+        acc = 0
+        for a, b in zip(samples, samples[1:]):
+            if b["total_" + key] >= a["total_" + key] > 0:
+                acc += b["total_" + key] - a["total_" + key]
+            else:
+                acc += b[key] - a[key] if b[key] >= a[key] else b[key]
+        return acc
     return total("download"), total("upload")
 
 
@@ -78,6 +93,8 @@ def main():
     ap.add_argument("--router", default="192.168.0.254", help="OpenWrt address")
     ap.add_argument("--from", dest="start", help="start: 1h/2d/... ago or ISO time")
     ap.add_argument("--to", dest="end", help="end: same formats (default: now)")
+    ap.add_argument("--tier", choices=("auto", "fine", "coarse"), default="auto",
+                    help="history tier (default: auto)")
     ap.add_argument("--format", choices=("table", "csv", "json"), default="table")
     ap.add_argument("--usage", action="store_true", help="print totals for the range only")
     ap.add_argument("--status", action="store_true", help="show daemon status")
@@ -91,7 +108,7 @@ def main():
         samples = [rpc(url, "latest")["sample"]]
     else:
         samples = fetch(url, parse_time(a.start) if a.start else 0,
-                        parse_time(a.end) if a.end else None)
+                        parse_time(a.end) if a.end else None, a.tier)
 
     if a.usage:
         if len(samples) < 2:

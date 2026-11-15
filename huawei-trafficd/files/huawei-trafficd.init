@@ -7,19 +7,25 @@ USE_PROCD=1
 PROG=/usr/sbin/huawei-trafficd
 
 start_service() {
-	local host port interval history state_file save_every
+	local host port interval history coarse_interval coarse_history
+	local state_file coarse_state_file save_every
 
 	config_load huawei-trafficd
 	config_get host main host 192.168.0.1
 	config_get port main port 80
 	config_get interval main interval 60
 	config_get history main history 4320
+	config_get coarse_interval main coarse_interval 3600
+	config_get coarse_history main coarse_history 8760
 	config_get state_file main state_file /tmp/huawei-trafficd.dat
+	config_get coarse_state_file main coarse_state_file
 	config_get save_every main save_every 0
 
 	procd_open_instance
-	procd_set_param command "$PROG" -H "$host" -P "$port" -i "$interval" -n "$history"
+	procd_set_param command "$PROG" -H "$host" -P "$port" -i "$interval" -n "$history" \
+		-c "$coarse_interval" -N "$coarse_history"
 	[ -n "$state_file" ] && procd_append_param command -f "$state_file"
+	[ -n "$coarse_state_file" ] && procd_append_param command -F "$coarse_state_file"
 	[ "$save_every" -gt 0 ] 2>/dev/null && procd_append_param command -S "$save_every"
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
