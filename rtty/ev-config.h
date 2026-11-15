@@ -1,0 +1,21 @@
+/* libev settings for uClibc 0.9.33 / Linux 3.18 (instead of running configure) */
+#define HAVE_SYS_EPOLL_H 1
+#define HAVE_EPOLL_CTL 1
+#define HAVE_POLL_H 1
+#define HAVE_POLL 1
+#define HAVE_SYS_SELECT_H 1
+#define HAVE_SELECT 1
+#define HAVE_SYS_EVENTFD_H 1
+#define HAVE_EVENTFD 1
+#define HAVE_SYS_SIGNALFD_H 1
+#define HAVE_SIGNALFD 1
+#define HAVE_CLOCK_SYSCALL 1
+#define HAVE_NANOSLEEP 1
+#define HAVE_FLOOR 1
+#define HAVE_SYS_INOTIFY_H 1
+#define HAVE_INOTIFY_INIT 1
+#define HAVE_KERNEL_RWF_T 0
+#define HAVE_LINUX_AIO_ABI_H 0
+#define HAVE_LINUX_FS_H 0
+#define EV_USE_IOURING 0
+#define EV_USE_LINUXAIO 0

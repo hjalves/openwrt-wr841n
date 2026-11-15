@@ -1,0 +1,8 @@
+#ifndef _RTTY_CONFIG_H
+#define _RTTY_CONFIG_H
+#define RTTY_VERSION_MAJOR  9
+#define RTTY_VERSION_MINOR  2
+#define RTTY_VERSION_PATCH  1
+#define RTTY_VERSION_STRING "9.2.1"
+/* #undef SSL_SUPPORT */
+#endif
