@@ -1,0 +1,10 @@
+{
+	"unauthenticated": {
+		"description": "Anonymous read access to Huawei traffic counter history",
+		"read": {
+			"ubus": {
+				"huawei.traffic": [ "latest", "query", "status" ]
+			}
+		}
+	}
+}
