@@ -93,7 +93,7 @@ Reply:
 ./query.py --status
 ```
 
-`--usage` adds up the differences between consecutive samples using the Huawei's lifetime totals, which keep counting across LTE reconnects. This makes it exact even across hourly gaps that contain a reconnect. If a total ever goes backwards (the counters were cleared on the Huawei), it falls back to the session counters for that step.
+`--usage` (and the dashboard) add up the bytes between consecutive samples. Within one LTE session the session counters are exact. Across a reconnect they use the Huawei's totals, unless the new session's own counter is larger. That happens after a **Huawei crash or reboot**, which rolls its "lifetime" totals back to the last saved value: on 2026-11-15 a reboot dropped a 5½-day, 58 GB session from them. Traffic between the last sample and such a crash can't be recovered, so the result is then a lower bound.
 
 ### Web page
 

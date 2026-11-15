@@ -66,18 +66,21 @@ def iso(ts):
 def usage(samples):
     """Bytes transferred between consecutive samples, summed.
 
-    Uses the Huawei's lifetime totals, which keep counting across LTE
-    reconnects. If a total ever goes backwards (counters cleared), falls back
-    to the session counter, treating a drop as a new session.
+    Within one LTE session (uptime advanced by the elapsed time) the session
+    counter is exact. Across a new session, the Huawei's totals cover a clean
+    reconnect, but a Huawei crash/reboot rolls them back to the last saved
+    value, so the new session's counter is the lower bound; take the larger.
     """
+    def step(a, b, key):
+        same = b["uptime"] >= a["uptime"] and \
+            (b["time"] - a["time"]) - (b["uptime"] - a["uptime"]) < 90
+        if same and b[key] >= a[key]:
+            return b[key] - a[key]
+        tot = b["total_" + key] - a["total_" + key]
+        return max(b[key], tot if a["total_" + key] > 0 and tot > 0 else 0)
+
     def total(key):
-        acc = 0
-        for a, b in zip(samples, samples[1:]):
-            if b["total_" + key] >= a["total_" + key] > 0:
-                acc += b["total_" + key] - a["total_" + key]
-            else:
-                acc += b[key] - a[key] if b[key] >= a[key] else b[key]
-        return acc
+        return sum(step(a, b, key) for a, b in zip(samples, samples[1:]))
     return total("download"), total("upload")
 
 

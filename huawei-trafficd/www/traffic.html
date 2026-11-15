@@ -9,8 +9,8 @@
 <title>LTE data usage</title>
 <link rel="icon" href="data:,">
 <style>
-.viz-root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
-@media (prefers-color-scheme:dark){.viz-root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5;--series-2:#d95926}}
+:root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5;--series-2:#d95926}}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--page)}
 .viz-root{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text-primary);background:var(--page);max-width:1100px;margin:0 auto;padding:20px 16px 40px}
@@ -206,10 +206,17 @@ function bucketEdges(from, to, b) {
     d.setDate(d.getDate() + b / D);
   }
 }
-function delta(a, b, k) {  // lifetime totals survive reconnects; else session counter
-  const tk = "total_" + k;
-  if (b[tk] >= a[tk] && a[tk] > 0) return b[tk] - a[tk];
-  return b[k] >= a[k] ? b[k] - a[k] : b[k];
+// Bytes between two samples. Within one LTE session (its uptime advanced by
+// the elapsed time) the session counter is exact. Across a new session, the
+// Huawei's "total" counters cover a clean reconnect, but a Huawei crash or
+// reboot rolls them back to the last saved value; the new session's own
+// counter is then the best lower bound. Take whichever is larger.
+function delta(a, b, k) {
+  const dt = b.time - a.time, tk = "total_" + k;
+  const same = b.uptime >= a.uptime && dt - (b.uptime - a.uptime) < 90;
+  if (same && b[k] >= a[k]) return b[k] - a[k];
+  const tot = b[tk] - a[tk];
+  return Math.max(b[k], a[tk] > 0 && tot > 0 ? tot : 0);
 }
 // spacing(t): expected seconds between samples at time t; a longer interval
 // is a collection gap whose bytes are known in total but not their timing.
