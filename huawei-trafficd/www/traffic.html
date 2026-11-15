@@ -17,6 +17,9 @@ html,body{margin:0;background:var(--page)}
 h1{font-size:20px;font-weight:600;margin:0}
 h2{font-size:14px;font-weight:600;margin:0 0 2px}
 header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:16px}
+.back{display:inline-block;color:var(--text-secondary);text-decoration:none;font-size:13px;margin-bottom:2px}
+.back:hover{color:var(--text-primary);text-decoration:underline}
+.back:focus-visible{outline:2px solid var(--series-1);outline-offset:2px;border-radius:2px}
 .status{margin:0;color:var(--text-secondary);font-size:13px}
 .status b{font-weight:600}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
@@ -68,7 +71,7 @@ th{color:var(--text-secondary);font-weight:600}
 <body>
 <main class="viz-root" id="root">
 <header>
-  <h1>LTE data usage</h1>
+  <div><a class="back" href="/">← Router</a><h1>LTE data usage</h1></div>
   <p class="status" id="status" role="status">Loading…</p>
 </header>
 
