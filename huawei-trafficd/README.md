@@ -95,6 +95,21 @@ Reply:
 
 `--usage` adds up the differences between consecutive samples using the Huawei's lifetime totals, which keep counting across LTE reconnects. This makes it exact even across hourly gaps that contain a reconnect. If a total ever goes backwards (the counters were cleared on the Huawei), it falls back to the session counters for that step.
 
+### Web page
+
+`www/traffic.html` is a dashboard served by the router itself at **http://192.168.0.254/traffic.html**. It is a single self-contained file (26 KiB, about 8 KiB on flash after JFFS2 compression) with no external scripts or fonts, so it works without internet access. It reads the same anonymous `/ubus` methods.
+
+- **Status line:** whether collection is working, the last sample time, and the last error if collection is failing.
+- **Current session:** uptime, and session download/upload with the lifetime totals.
+- **Time range:** presets for 1h, 6h, 24h, 3d, 7d, 30d and 1y, or a custom from/to. The download and upload totals for the range use lifetime counters, so they stay exact across reconnects.
+- **Charts:** download and upload per period, as two charts with their own scales. The period grows with the range: from 1 minute (for 1h) to 1 week (for 1y). It also grows on narrow screens so each bar stays wide enough to read. Days and weeks follow your local calendar, including daylight-saving changes.
+- **Details:** hovering a bar shows the period, bytes and average rate. You can also focus a chart and use ← →, Home, End and Esc. "Show table" lists every period, and "Download CSV" exports the raw samples in the range.
+- **Gaps:** where the daemon wasn't collecting, the bytes across the gap are known in total but not their timing. Those bars are faded, and their tooltip says how long the gap was.
+- **Empty periods:** periods before the history starts, or with no samples yet, show no bar, as opposed to a zero bar.
+- **Refresh and theme:** preset ranges refresh every minute. Light and dark mode follow the device setting.
+
+Long ranges read the hourly tier when it reaches back far enough, in pages of 1000 samples to keep each router reply small (a full year is about 9 requests).
+
 ## Configuration
 
 `/etc/config/huawei-trafficd`:
@@ -149,7 +164,7 @@ Copy the files to the router's `/tmp` with the [`router-ssh`](../router-ssh/READ
 
 ```sh
 ./router-ssh/connect 'mkdir -m 700 /tmp/htd-install'
-./router-ssh/copy huawei-trafficd/huawei-trafficd huawei-trafficd/files/* router:/tmp/htd-install/
+./router-ssh/copy huawei-trafficd/huawei-trafficd huawei-trafficd/files/* huawei-trafficd/www/traffic.html router:/tmp/htd-install/
 ./router-ssh/connect
 ```
 
@@ -160,6 +175,7 @@ cp huawei-trafficd           /usr/sbin/huawei-trafficd && chmod 755 /usr/sbin/hu
 cp huawei-trafficd.init      /etc/init.d/huawei-trafficd && chmod 755 /etc/init.d/huawei-trafficd
 cp huawei-trafficd.config    /etc/config/huawei-trafficd
 cp huawei-trafficd.acl.json  /usr/share/rpcd/acl.d/huawei-trafficd.json
+cp traffic.html              /www/traffic.html          # optional web page
 /etc/init.d/huawei-trafficd enable
 /etc/init.d/huawei-trafficd start
 /etc/init.d/rpcd restart     # the anonymous session's ACLs are loaded at rpcd start
@@ -172,7 +188,7 @@ Restarting rpcd logs out existing LuCI and ubus sessions. procd restarts the dae
 ```sh
 /etc/init.d/huawei-trafficd stop; /etc/init.d/huawei-trafficd disable
 rm /usr/sbin/huawei-trafficd /etc/init.d/huawei-trafficd /etc/config/huawei-trafficd \
-   /usr/share/rpcd/acl.d/huawei-trafficd.json /tmp/huawei-trafficd.dat*
+   /usr/share/rpcd/acl.d/huawei-trafficd.json /www/traffic.html /tmp/huawei-trafficd.dat*
 /etc/init.d/rpcd restart
 ```
 
@@ -181,6 +197,7 @@ rm /usr/sbin/huawei-trafficd /etc/init.d/huawei-trafficd /etc/config/huawei-traf
 - Under qemu on the build host, the MIPS binary fetched real counters from the Huawei and saved them on SIGTERM.
 - A native build was run against host builds of libubox and ubus at the router's exact commits. That test covered every method, ring-buffer eviction, relative `from`, `limit`/`truncated`, invalid arguments, saving and reloading the history, and errors for a refused connection and for a timeout.
 - **Two-tier update:** the native build was tested with a 5-second sampling interval and a 12-second coarse bucket, with small capacities. That covered bucket boundaries, eviction in both tiers, the `auto` merge at the tier boundary, `tier` selection and validation, pagination across tiers, saving and reloading both files, and migrating a version-1 file (10 half-hourly samples became 5 hourly samples). The update was installed on the router by replacing the binary, init script and config. The existing history carried over, overlay use was 268 KiB afterwards, and RSS was 812 KiB.
+- **Web page:** rendered in Chromium against a mock server holding a year of synthetic data, including a 6-hour collection gap. Every preset was checked in light and dark mode, plus a custom range, a 390 px phone layout (no sideways scrolling), keyboard navigation, the table, and the Europe/Lisbon daylight-saving boundary for week buckets. It was then installed at `/www/traffic.html` and loaded from the router with real data, with no console errors.
 - Installed on the router as above (overlay use went from 284 to 292 KiB). The service is enabled at boot and running. `ubus call` and anonymous HTTP `latest`/`query` work, while anonymous `system.info` is still `Access denied`. History survived `/etc/init.d/huawei-trafficd restart`.
 
 ## Security notes

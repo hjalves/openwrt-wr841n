@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>LTE data usage</title>
+<link rel="icon" href="data:,">
+<style>
+.viz-root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
+@media (prefers-color-scheme:dark){.viz-root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5;--series-2:#d95926}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page)}
+.viz-root{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text-primary);background:var(--page);max-width:1100px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:20px;font-weight:600;margin:0}
+h2{font-size:14px;font-weight:600;margin:0 0 2px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:16px}
+.status{margin:0;color:var(--text-secondary);font-size:13px}
+.status b{font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.tile,.card{background:var(--surface-1);border:1px solid var(--border);border-radius:10px}
+.tile{padding:12px 14px}
+.tile .label{color:var(--text-secondary);font-size:13px}
+.tile .value{font-size:22px;font-weight:600;margin-top:2px;white-space:nowrap}
+.tile .sub{color:var(--muted);font-size:12px;margin-top:2px}
+.key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:0}
+.k1{background:var(--series-1)}.k2{background:var(--series-2)}
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 12px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface-1)}
+.seg button{border:0;border-right:1px solid var(--border);background:none;color:var(--text-secondary);font:inherit;padding:6px 11px;cursor:pointer}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--wash)}
+.seg button[aria-pressed=true]{color:var(--text-primary);font-weight:600;background:var(--wash)}
+.custom{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--text-secondary);font-size:13px}
+input,.btn{font:inherit;font-size:13px;color:var(--text-primary);background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:5px 8px}
+.btn{cursor:pointer}.btn:hover{background:var(--wash)}
+button:focus-visible,input:focus-visible,.chart:focus-visible{outline:2px solid var(--series-1);outline-offset:2px}
+.card{padding:14px 14px 8px;margin-bottom:12px;transition:opacity .15s}
+.loading .card,.loading .tiles.range{opacity:.5}
+.card .note{color:var(--muted);font-size:12px;margin:0 0 6px}
+.chart{position:relative;outline:none}
+.chart svg{display:block;width:100%;overflow:visible}
+.chart text{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.chart .grid{stroke:var(--grid);stroke-width:1;shape-rendering:crispEdges}
+.chart .base{stroke:var(--axis);stroke-width:1;shape-rendering:crispEdges}
+.chart .band{fill:var(--wash)}
+.chart .empty{fill:var(--text-secondary);font-size:13px}
+.s1{fill:var(--series-1)}.s2{fill:var(--series-2)}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.tools .hint{color:var(--muted);font-size:12px}
+table{width:100%;border-collapse:collapse;background:var(--surface-1);border:1px solid var(--border);border-radius:10px;font-size:13px}
+th,td{padding:5px 10px;text-align:right;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--text-secondary);font-weight:600}
+.tip{position:fixed;z-index:10;pointer-events:none;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);padding:8px 10px;font-size:12px;min-width:170px}
+.tip .t{color:var(--text-secondary);margin-bottom:4px}
+.tip .r{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.tip .r i{display:inline-block;width:12px;height:2px;border-radius:1px}
+.tip .r b{font-weight:600;font-size:13px}
+.tip .r span{color:var(--text-secondary)}
+.s1.est,.s2.est{fill-opacity:.38}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
+</style>
+</head>
+<body>
+<main class="viz-root" id="root">
+<header>
+  <h1>LTE data usage</h1>
+  <p class="status" id="status" role="status">Loading…</p>
+</header>
+
+<section class="tiles" aria-label="Current LTE session">
+  <div class="tile"><div class="label">Session uptime</div><div class="value" id="tUp">–</div><div class="sub" id="tUpSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k1"></span>Session download</div><div class="value" id="tSd">–</div><div class="sub" id="tSdSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k2"></span>Session upload</div><div class="value" id="tSu">–</div><div class="sub" id="tSuSub">&nbsp;</div></div>
+</section>
+
+<nav class="filters" aria-label="Time range">
+  <div class="seg" id="presets" role="group" aria-label="Preset ranges"></div>
+  <form class="custom" id="custom">
+    <label>From <input type="datetime-local" id="from" required></label>
+    <label>to <input type="datetime-local" id="to"></label>
+    <button class="btn" type="submit">Apply</button>
+  </form>
+</nav>
+
+<div id="scoped">
+<section class="tiles range" aria-label="Selected range">
+  <div class="tile"><div class="label"><span class="key k1"></span>Downloaded</div><div class="value" id="rD">–</div><div class="sub" id="rDSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k2"></span>Uploaded</div><div class="value" id="rU">–</div><div class="sub" id="rUSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Total</div><div class="value" id="rT">–</div><div class="sub" id="rRange">&nbsp;</div></div>
+</section>
+
+<section class="card">
+  <h2 id="hD">Download</h2>
+  <p class="note" id="nD">&nbsp;</p>
+  <div class="chart" id="cD" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
+  <h2 id="hU">Upload</h2>
+  <p class="note" id="nU">&nbsp;</p>
+  <div class="chart" id="cU" tabindex="0" aria-describedby="kbd"></div>
+</section>
+
+<div class="tools">
+  <button class="btn" id="tblBtn" aria-expanded="false" aria-controls="tbl">Show table</button>
+  <button class="btn" id="csvBtn">Download CSV (raw samples)</button>
+  <span class="hint" id="kbd">Hover a bar, or focus a chart and use ← → for details.</span>
+</div>
+<table id="tbl" hidden>
+  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th></tr></thead>
+  <tbody></tbody>
+</table>
+</div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const ANON = "00000000000000000000000000000000";
+const H = 3600, D = 86400;
+// label, span (s), bucket (s)
+const PRESETS = [["1h", H, 60], ["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H],
+                 ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
+const BUCKETS = [60, 300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
+const PAGE = 1000;  // samples per request; keeps each router reply ~150 KB
+
+let state = {preset: "24h", from: 0, to: 0, bucket: 900};
+let view = null, status = null, rpcId = 0, refreshTimer = 0, hoverIdx = -1;
+
+async function rpc(method, args) {
+  const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({jsonrpc: "2.0", id: ++rpcId, method: "call",
+                          params: [ANON, "huawei.traffic", method, args || {}]})});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || "RPC error");
+  if (j.result[0] !== 0) throw new Error(j.result[0] === 9 ? "no data yet" : "ubus status " + j.result[0]);
+  return j.result[1] || {};
+}
+
+async function fetchSamples(from, to, tier) {
+  const out = [];
+  let args = {from, to, tier, limit: PAGE};
+  for (;;) {
+    const p = await rpc("query", args);
+    out.push(...p.samples);
+    if (!p.truncated || !p.samples.length) return out;
+    args = {...args, from: p.samples[p.samples.length - 1].time + 1};
+  }
+}
+
+// ---- formatting ----
+const nf = (v, d) => v.toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
+function bytes(v) {  // decimal units, as data plans use
+  const u = ["B", "kB", "MB", "GB", "TB"];
+  let i = 0;
+  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+  return i ? nf(v, v < 10 ? 2 : v < 100 ? 1 : 0) + " " + u[i] : nf(v, 0) + " B";
+}
+function rate(bytesPerSec) {
+  const b = bytesPerSec * 8;
+  return b >= 1e6 ? nf(b / 1e6, b < 1e7 ? 2 : 1) + " Mbit/s" : nf(b / 1e3, 0) + " kbit/s";
+}
+function duration(s) {
+  const d = Math.floor(s / D), h = Math.floor(s % D / H), m = Math.floor(s % H / 60);
+  return d ? `${d}d ${h}h ${m}m` : h ? `${h}h ${m}m` : m ? `${m}m` : `${Math.round(s)}s`;
+}
+const dfmt = (t, o) => new Date(t * 1000).toLocaleString(undefined, o);
+const tTime = t => dfmt(t, {hour: "2-digit", minute: "2-digit"});
+const tDate = t => dfmt(t, {month: "short", day: "numeric"});
+const tFull = t => dfmt(t, {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+function periodLabel(a, b) {
+  if (b - a >= D) return b - a > D ? `${tDate(a)} – ${tDate(b - 1)}` : dfmt(a, {weekday: "short", month: "short", day: "numeric", year: "numeric"});
+  return `${dfmt(a, {weekday: "short", month: "short", day: "numeric"})}, ${tTime(a)}–${tTime(b)}`;
+}
+const bucketName = b => ({60: "minute", 300: "5 minutes", 900: "15 minutes", 1800: "30 minutes", 3600: "hour",
+  10800: "3 hours", 21600: "6 hours", 43200: "12 hours", 86400: "day", 604800: "week"})[b];
+
+// ---- bucketing ----
+function tzOff(t) { return -new Date(t * 1000).getTimezoneOffset() * 60; }
+// Bucket boundaries. Days and weeks follow the local calendar (midnight to
+// midnight, weeks from Monday), so they stay correct across DST changes.
+function bucketEdges(from, to, b) {
+  const e = [];
+  if (b < D) {
+    for (let t = Math.floor((from + tzOff(from)) / b) * b - tzOff(from); ; t += b) {
+      e.push(t);
+      if (t >= to) return e;
+    }
+  }
+  const d = new Date(from * 1000);
+  d.setHours(0, 0, 0, 0);
+  if (b === 7 * D) d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  for (;;) {
+    const t = d.getTime() / 1000;
+    e.push(t);
+    if (t >= to) return e;
+    d.setDate(d.getDate() + b / D);
+  }
+}
+function delta(a, b, k) {  // lifetime totals survive reconnects; else session counter
+  const tk = "total_" + k;
+  if (b[tk] >= a[tk] && a[tk] > 0) return b[tk] - a[tk];
+  return b[k] >= a[k] ? b[k] - a[k] : b[k];
+}
+// spacing(t): expected seconds between samples at time t; a longer interval
+// is a collection gap whose bytes are known in total but not their timing.
+function buildBuckets(samples, from, to, b, spacing) {
+  const E = bucketEdges(from, to, b), bk = [];
+  for (let i = 0; i + 1 < E.length; i++) bk.push({t: E[i], e: E[i + 1], d: 0, u: 0, cov: 0, est: 0, gap: 0});
+  let totD = 0, totU = 0, j0 = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], c = samples[i], dt = c.time - a.time;
+    if (dt <= 0) continue;
+    const lo = Math.max(a.time, from), hi = Math.min(c.time, to);
+    if (hi <= lo) continue;
+    const dd = delta(a, c, "download"), du = delta(a, c, "upload");
+    const isGap = dt > 3 * spacing(a.time);
+    while (j0 < bk.length && bk[j0].e <= lo) j0++;
+    // spread this interval's bytes over the buckets it overlaps, by time
+    for (let j = j0; j < bk.length && bk[j].t < hi; j++) {
+      const ov = Math.min(hi, bk[j].e) - Math.max(lo, bk[j].t);
+      if (ov <= 0) continue;
+      const f = ov / dt;
+      bk[j].d += dd * f; bk[j].u += du * f; bk[j].cov += ov;
+      if (isGap) { bk[j].est += ov; bk[j].gap = Math.max(bk[j].gap, dt); }
+      totD += dd * f; totU += du * f;
+    }
+  }
+  return {bk, b, totD, totU};
+}
+
+// ---- charts ----
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function niceTicks(max) {
+  if (max <= 0) return [0];
+  const raw = max / 4, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= raw);
+  const ticks = [];
+  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(v);
+  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step);
+  return ticks;
+}
+function tickLabel(v, top) {  // one unit per axis, chosen from the top tick
+  const u = [[1e12, "TB"], [1e9, "GB"], [1e6, "MB"], [1e3, "kB"], [1, "B"]].find(x => top >= x[0]) || [1, "B"];
+  const s = v / u[0];
+  return (Number.isInteger(s) ? s : nf(s, 1)) + " " + u[1];
+}
+const STEPS = [60, 300, 900, 1800, H, 2*H, 3*H, 6*H, 12*H, D, 2*D, 7*D, 14*D, 28*D];
+function xStep(n, b, w) {  // label spacing: a round multiple of the bucket
+  const maxLabels = Math.max(2, Math.floor(w / 80));
+  return STEPS.find(s => s >= b && s % b === 0 && n * b / s <= maxLabels) || 28 * D;
+}
+function onStep(t, i, b, step) {  // labels land on round local times
+  if (b >= 7 * D) return i % (step / b) === 0;
+  const lt = t + tzOff(t);
+  return step % (7 * D) === 0 ? (lt - 4 * D) % step === 0 : lt % step === 0;
+}
+function xLabel(t, b, prev) {
+  if (b >= D) return tDate(t);
+  const lt = new Date(t * 1000);
+  return (lt.getHours() === 0 && lt.getMinutes() === 0) || prev == null ? tDate(t) + (b < H ? " " + tTime(t) : "") : tTime(t);
+}
+
+function drawChart(box, data, key, cls, histStart) {
+  box.textContent = "";
+  const W = Math.max(280, box.clientWidth), PH = 170, AX = 22, ML = 58, MR = 6, MT = 8;
+  const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `${key === "d" ? "Download" : "Upload"} per ${bucketName(data.b)}`}, box);
+  const vals = data.bk.map(x => x[key]), max = Math.max(...vals, 0);
+  const ticks = niceTicks(max), top = ticks[ticks.length - 1] || 1;
+  const y = v => MT + PH - v / top * PH;
+  for (const t of ticks) {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, tickLabel(t, top));
+  }
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  const bw = Math.max(1, Math.min(24, slot - 2));
+  let any = false;
+  data.bk.forEach((x, i) => {
+    if (!x.cov || x[key] <= 0) return;
+    any = true;
+    const h = Math.max(1, PH - (y(x[key]) - MT)), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h;
+    const r = Math.min(4, bw / 2, h);
+    el("path", {class: cls + (x.est > x.cov / 2 ? " est" : ""), d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
+  });
+  const step = xStep(n, data.b, pw);
+  let prev = null;
+  data.bk.forEach((x, i) => {
+    if (!onStep(x.t, i, data.b, step)) return;
+    const cx = ML + i * slot + slot / 2;
+    if (cx < ML + 18 || cx > W - MR - 18) return;
+    el("text", {x: cx, y: MT + PH + 16, "text-anchor": "middle"}, svg, xLabel(x.t, data.b, prev));
+    prev = x.t;
+  });
+  if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
+               histStart ? "No traffic recorded in this range" : "No data in this range");
+  const hit = el("rect", {x: ML, y: MT, width: pw, height: PH + AX, fill: "transparent"}, svg);
+  hit.addEventListener("pointermove", e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    setHover(Math.min(n - 1, Math.max(0, Math.floor((px - ML) / slot))), e.clientX, e.clientY);
+  });
+  hit.addEventListener("pointerleave", () => setHover(-1));
+  box._band = {band, ML, slot, svg, W};
+}
+
+function setHover(i, cx, cy) {
+  hoverIdx = i;
+  const tip = $("tip");
+  for (const id of ["cD", "cU"]) {
+    const c = $(id)._band;
+    if (c) c.band.setAttribute("x", i < 0 ? -999 : c.ML + i * c.slot);
+  }
+  if (i < 0 || !view) { tip.hidden = true; return; }
+  const x = view.data.bk[i], b = view.data.b;
+  tip.textContent = "";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = periodLabel(x.t, x.e);
+  tip.appendChild(t);
+  if (!x.cov) {
+    const r = document.createElement("div");
+    r.textContent = "No data";
+    tip.appendChild(r);
+  } else {
+    for (const [k, name, color] of [["d", "Download", "--series-1"], ["u", "Upload", "--series-2"]]) {
+      const r = document.createElement("div"), key = document.createElement("i"),
+            v = document.createElement("b"), s = document.createElement("span");
+      r.className = "r";
+      key.style.background = `var(${color})`;
+      v.textContent = bytes(x[k]);
+      s.textContent = `${name} · ${rate(x[k] / x.cov)} avg`;
+      r.append(key, v, s);
+      tip.appendChild(r);
+    }
+    if (x.est) {
+      const r = document.createElement("div");
+      r.className = "t";
+      r.style.margin = "4px 0 0";
+      r.textContent = `Estimated: no samples for ${duration(x.gap)}, so that traffic is spread evenly`;
+      tip.appendChild(r);
+    } else if (x.cov < (x.e - x.t) * 0.9 && x.e <= view.to) {
+      const r = document.createElement("div");
+      r.className = "t";
+      r.style.margin = "4px 0 0";
+      r.textContent = `Data covers ${duration(x.cov)} of this ${bucketName(b)}`;
+      tip.appendChild(r);
+    }
+  }
+  if (cx == null) {  // keyboard: anchor to the bar in the focused chart
+    const c = (document.activeElement && document.activeElement._band) || $("cD")._band;
+    const r = c.svg.getBoundingClientRect();
+    cx = r.left + (c.ML + (i + 0.5) * c.slot) * r.width / c.W;
+    cy = r.top + 20;
+  }
+  tip.hidden = false;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.max(4, Math.min(innerWidth - tw - 4, cx + 14)) + "px";
+  tip.style.top = Math.max(4, Math.min(innerHeight - th - 4, cy - th - 10)) + "px";
+}
+
+for (const id of ["cD", "cU"]) {
+  $(id).addEventListener("keydown", e => {
+    if (!view) return;
+    const n = view.data.bk.length;
+    let i = hoverIdx;
+    if (e.key === "ArrowRight") i = i < 0 ? n - 1 : Math.min(n - 1, i + 1);
+    else if (e.key === "ArrowLeft") i = i < 0 ? n - 1 : Math.max(0, i - 1);
+    else if (e.key === "Home") i = 0;
+    else if (e.key === "End") i = n - 1;
+    else if (e.key === "Escape") i = -1;
+    else return;
+    e.preventDefault();
+    setHover(i);
+  });
+  $(id).addEventListener("blur", () => setHover(-1));
+}
+
+// ---- rendering ----
+function setText(id, v) { $(id).textContent = v; }
+
+function renderStatus(st, latest) {
+  const s = $("status");
+  s.textContent = "";
+  const ok = st.failures === 0 && st.last_success;
+  const dot = document.createElement("span"), b = document.createElement("b");
+  dot.className = "dot";
+  dot.style.background = ok ? "var(--good)" : "var(--critical)";
+  b.textContent = ok ? "Collecting" : st.last_success ? "Collection failing" : "Waiting for first sample";
+  s.append(dot, b);
+  let txt = ` · source ${st.source}`;
+  if (latest) txt += ` · last sample ${tFull(latest.time)}`;
+  if (!ok && st.last_error) txt += ` · ${st.last_error}`;
+  s.append(document.createTextNode(txt));
+}
+
+function renderLatest(x) {
+  if (!x) return;
+  setText("tUp", duration(x.uptime));
+  setText("tUpSub", "since " + tFull(x.time - x.uptime));
+  setText("tSd", bytes(x.download));
+  setText("tSdSub", "lifetime " + bytes(x.total_download));
+  setText("tSu", bytes(x.upload));
+  setText("tSuSub", "lifetime " + bytes(x.total_upload));
+}
+
+function renderRange() {
+  const {from, to, histStart} = view;
+  // At least ~6 px per bar: on narrow screens step up to a larger bucket.
+  const maxBars = Math.max(12, Math.floor(($("cD").clientWidth - 64) / 6));
+  const b = BUCKETS.find(b => b >= view.baseB && (to - from) / b <= maxBars) || 7 * D;
+  const data = view.data = buildBuckets(view.samples, from, to, b, view.spacing);
+  setText("rD", bytes(data.totD));
+  setText("rU", bytes(data.totU));
+  setText("rT", bytes(data.totD + data.totU));
+  const covered = data.bk.reduce((s, x) => s + x.cov, 0);
+  setText("rDSub", covered ? rate(data.totD / covered) + " avg" : " ");
+  setText("rUSub", covered ? rate(data.totU / covered) + " avg" : " ");
+  setText("rRange", `${tFull(from)} – ${tFull(to)}`);
+  const per = bucketName(data.b);
+  setText("hD", `Download per ${per}`);
+  setText("hU", `Upload per ${per}`);
+  const notes = [];
+  if (histStart && histStart > from) notes.push(`History starts ${tFull(histStart)}; earlier periods have no data.`);
+  if (data.bk.some(x => x.est > x.cov / 2)) notes.push("Faded bars span a gap in collection: their total is exact, the timing within the gap is not.");
+  const note = notes.join(" ") || " ";
+  setText("nD", note);
+  setText("nU", note);
+  drawChart($("cD"), data, "d", "s1", histStart);
+  drawChart($("cU"), data, "u", "s2", histStart);
+  const tb = $("tbl").tBodies[0];
+  tb.textContent = "";
+  for (const x of data.bk) {
+    const tr = tb.insertRow();
+    const cells = [periodLabel(x.t, x.e)].concat(x.cov
+      ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"]);
+    for (const c of cells) tr.insertCell().textContent = c;
+  }
+}
+
+function pickBucket(span, minB) {
+  return BUCKETS.find(b => b >= minB && span / b <= 120) || 7 * D;
+}
+
+async function load() {
+  clearTimeout(refreshTimer);
+  const root = $("root");
+  root.classList.add("loading");
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    status = await rpc("status");
+    let latest = null;
+    try { latest = (await rpc("latest")).sample; } catch (e) { /* no data yet */ }
+    renderStatus(status, latest);
+    renderLatest(latest);
+
+    let from, to, b;
+    if (state.preset) {
+      const p = PRESETS.find(p => p[0] === state.preset);
+      to = now; from = now - p[1]; b = p[2];
+    } else {
+      from = state.from; to = Math.min(state.to || now, now);
+      const fineOldest = status.fine && status.fine.oldest || now;
+      b = pickBucket(to - from, from < fineOldest ? H : 60);
+    }
+    // Hourly samples are enough for buckets of an hour or more, if they reach back far enough.
+    const c = status.coarse;
+    const tier = b >= H && c && c.oldest && c.oldest <= from ? "coarse" : "auto";
+    const pad = tier === "coarse" ? 2 * H : 5 * 60;  // one sample before the range
+    const samples = await fetchSamples(from - pad, to, tier);
+    const oldest = [status.fine && status.fine.oldest, c && c.oldest].filter(Boolean);
+    const fineOldest = status.fine && status.fine.oldest || Infinity;
+    view = {from, to, samples, baseB: b, histStart: oldest.length ? Math.min(...oldest) : 0,
+            spacing: tier === "coarse" ? () => c.interval : t => t < fineOldest ? (c && c.interval || H) : status.fine.interval};
+    renderRange();
+    if (hoverIdx >= 0) setHover(-1);
+  } catch (e) {
+    const s = $("status");
+    s.textContent = "";
+    const dot = document.createElement("span"), b = document.createElement("b");
+    dot.className = "dot";
+    dot.style.background = "var(--critical)";
+    b.textContent = "Cannot load data";
+    s.append(dot, b, document.createTextNode(" · " + e.message));
+  } finally {
+    root.classList.remove("loading");
+    if (state.preset) refreshTimer = setTimeout(load, 60000);
+  }
+}
+
+// ---- controls ----
+const toLocalInput = t => { const d = new Date(t * 1000 - new Date(t * 1000).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+for (const [label] of PRESETS) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = label;
+  btn.addEventListener("click", () => { state = {preset: label}; syncControls(); load(); });
+  $("presets").appendChild(btn);
+}
+function syncControls() {
+  for (const b of $("presets").children) b.setAttribute("aria-pressed", b.textContent === state.preset);
+  if (state.preset) {
+    const now = Math.floor(Date.now() / 1000), p = PRESETS.find(p => p[0] === state.preset);
+    $("from").value = toLocalInput(now - p[1]);
+    $("to").value = "";
+  }
+}
+$("custom").addEventListener("submit", e => {
+  e.preventDefault();
+  const f = Date.parse($("from").value) / 1000, t = $("to").value ? Date.parse($("to").value) / 1000 : 0;
+  if (!f || (t && t <= f)) return;
+  state = {preset: null, from: Math.floor(f), to: t ? Math.floor(t) : 0};
+  syncControls();
+  load();
+});
+$("tblBtn").addEventListener("click", () => {
+  const t = $("tbl"), show = t.hidden;
+  t.hidden = !show;
+  $("tblBtn").textContent = show ? "Hide table" : "Show table";
+  $("tblBtn").setAttribute("aria-expanded", show);
+});
+$("csvBtn").addEventListener("click", () => {
+  if (!view) return;
+  const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b"];
+  for (const s of view.samples)
+    if (s.time >= view.from && s.time <= view.to)
+      rows.push([s.time, new Date(s.time * 1000).toISOString(), s.uptime, s.download, s.upload,
+                 s.total_download, s.total_upload].join(","));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
+  a.download = `lte-usage-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+let resizeT = 0;
+addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => view && renderRange(), 150); });
+syncControls();
+load();
+</script>
+</body>
+</html>
