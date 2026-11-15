@@ -1,0 +1,27 @@
+#!/bin/sh
+# Usage: copy SOURCE... DEST
+# Prefix router paths with "router:", e.g.
+#   copy build/prog router:/tmp/demo/
+#   copy router:/etc/config/network ./network.backup
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 SOURCE... DEST   (router paths as router:/path)" >&2
+    exit 2
+fi
+# Rewrite router:PATH into user@host:PATH, keeping arguments intact.
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    arg=$1
+    shift
+    case $arg in
+        router:*) arg="${ROUTER_USER:-root}@${ROUTER_HOST:-192.168.0.254}:${arg#router:}" ;;
+    esac
+    set -- "$@" "$arg"
+    i=$((i + 1))
+done
+. "$script_dir/common.sh"
+# -O: use the legacy SCP protocol; Dropbear has no SFTP server, which
+# modern scp uses by default.
+router_exec scp -O "$@"

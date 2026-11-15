@@ -35,7 +35,7 @@ The output `ubus-hello/ubus-hello` is dynamically linked for the router's MIPS/u
 
 ## Transfer and run temporarily
 
-These commands use the workspace's `router-ssh/connect` Docker helper and require Docker. First connect interactively and independently verify the router's host-key fingerprint as described in [`../router-ssh/README.md`](../router-ssh/README.md). The helper builds its client image and remembers the accepted key.
+These commands use the workspace's `router-ssh` helpers, which need only the workstation's OpenSSH client. First connect interactively and independently verify the router's host-key fingerprint as described in [`../router-ssh/README.md`](../router-ssh/README.md); the helpers remember the accepted key.
 
 Create a new temporary directory on the router. `mkdir` fails rather than overwriting an existing directory:
 
@@ -43,18 +43,10 @@ Create a new temporary directory on the router. `mkdir` fails rather than overwr
 ./router-ssh/connect 'mkdir -m 700 /tmp/ubus-hello-demo'
 ```
 
-From the workspace root, copy the executable and ACL example using the same Docker image and known-hosts file:
+From the workspace root, copy the executable and ACL example:
 
 ```sh
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/openwrt-router-ssh"
-docker run --rm -it --network host \
-  --mount "type=bind,src=$PWD/ubus-hello,dst=/app,readonly" \
-  --mount "type=bind,src=$STATE_DIR,dst=/root/.ssh" \
-  --entrypoint scp opencode-openwrt-router-ssh:local \
-  -O -o KexAlgorithms=diffie-hellman-group14-sha1 \
-  -o HostKeyAlgorithms=ssh-rsa -o StrictHostKeyChecking=ask \
-  /app/ubus-hello /app/hello-example.acl.json \
-  root@192.168.0.254:/tmp/ubus-hello-demo/
+./router-ssh/copy ubus-hello/ubus-hello ubus-hello/hello-example.acl.json router:/tmp/ubus-hello-demo/
 ```
 
 Open an interactive router shell, then run the service in the foreground:
@@ -121,14 +113,7 @@ This writes to the router's flash; it is not part of running the local ubus exam
 The router's HTTP endpoint does not use TLS. Do not send its password or a session token across an untrusted network. After accepting the router host key with the helper, start a tunnel from the workspace root:
 
 ```sh
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/openwrt-router-ssh"
-docker run --rm -it --network host \
-  --mount "type=bind,src=$STATE_DIR,dst=/root/.ssh" \
-  opencode-openwrt-router-ssh:local \
-  -o KexAlgorithms=diffie-hellman-group14-sha1 \
-  -o HostKeyAlgorithms=ssh-rsa -o StrictHostKeyChecking=ask \
-  -o ExitOnForwardFailure=yes \
-  -N -L 127.0.0.1:18080:127.0.0.1:80 root@192.168.0.254
+./router-ssh/tunnel 18080 80
 ```
 
 Keep the tunnel running and, in another terminal, run:

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Usage: tunnel [LOCAL_PORT [REMOTE_PORT]]
+# Forwards 127.0.0.1:LOCAL_PORT (default 18080) to the router's own
+# 127.0.0.1:REMOTE_PORT (default 80, uhttpd). Stop with Ctrl+C.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+local_port=${1:-18080}
+remote_port=${2:-80}
+set --
+. "$script_dir/common.sh"
+echo "Forwarding http://127.0.0.1:$local_port/ -> router 127.0.0.1:$remote_port (Ctrl+C to stop)" >&2
+router_exec ssh "$@" -o ExitOnForwardFailure=yes -N \
+    -L "127.0.0.1:$local_port:127.0.0.1:$remote_port" "$router_user@$router_host"

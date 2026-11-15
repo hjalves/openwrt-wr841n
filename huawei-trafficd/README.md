@@ -113,7 +113,15 @@ Rebuilding `ubus-hello` this way reproduced the committed binary, so the emulate
 
 ## Install
 
-Copy the files to the router's `/tmp` (Dropbear 2015 needs `scp -O` and the legacy algorithms; see [`../router-ssh/README.md`](../router-ssh/README.md)), then on the router:
+Copy the files to the router's `/tmp` with the [`router-ssh`](../router-ssh/README.md) helpers, from the workspace root:
+
+```sh
+./router-ssh/connect 'mkdir -m 700 /tmp/htd-install'
+./router-ssh/copy huawei-trafficd/huawei-trafficd huawei-trafficd/files/* router:/tmp/htd-install/
+./router-ssh/connect
+```
+
+Then on the router, in `/tmp/htd-install`:
 
 ```sh
 cp huawei-trafficd           /usr/sbin/huawei-trafficd && chmod 755 /usr/sbin/huawei-trafficd
