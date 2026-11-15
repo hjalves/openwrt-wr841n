@@ -7,6 +7,7 @@ Examples:
   ./query.py --from 2026-11-15T08:00 --to 2026-11-15T12:00 --format csv
   ./query.py --from 1d --usage       # bytes transferred over the last day
   ./query.py --from 30d --tier coarse --format csv   # hourly samples, 30 days
+  ./query.py --from 7d --events      # connection log: new sessions, gaps, changes
 
 History has two tiers: "fine" (every sample, last few days) and "coarse"
 (hourly, up to a year). The default "auto" returns coarse samples older than
@@ -63,6 +64,56 @@ def iso(ts):
     return dt.datetime.fromtimestamp(ts).isoformat(sep=" ", timespec="seconds")
 
 
+def same_session(a, b):
+    """The Huawei's session uptime advanced by the elapsed time."""
+    return b["uptime"] >= a["uptime"] and \
+        (b["time"] - a["time"]) - (b["uptime"] - a["uptime"]) < 90
+
+
+NET = {19: "LTE", 101: "LTE", 0: "no service"}
+CONN = {900: "connecting", 901: "connected", 902: "disconnected", 903: "disconnecting"}
+
+
+def net_name(t):
+    if t in NET:
+        return NET[t]
+    return "2G" if 1 <= t <= 3 else "3G" if 4 <= t <= 18 or 41 <= t <= 46 else f"type {t}"
+
+
+def cell_name(c):
+    return f"{c // 256}/{c % 256}"  # eNodeB / sector
+
+
+def events(samples, spacing, cells=True):
+    """Connection log derived from consecutive samples (as the dashboard does).
+
+    spacing(t): expected seconds between samples at time t; longer is a gap.
+    """
+    ev = []
+    for a, b in zip(samples, samples[1:]):
+        dt_ = b["time"] - a["time"]
+        if dt_ <= 0:
+            continue
+        gap = dt_ > 3 * spacing(a["time"])
+        if not same_session(a, b):
+            ev.append((b["time"] - b["uptime"], "New LTE session",
+                       (f"no samples for {dt.timedelta(seconds=dt_)} before it; " if gap else "") +
+                       f"previous session lasted at least {dt.timedelta(seconds=a['uptime'])}"))
+        elif gap:
+            ev.append((a["time"], "Collection gap", f"no samples for {dt.timedelta(seconds=dt_)}; session continued"))
+        ca, cb = a.get("conn_status"), b.get("conn_status")
+        if ca and cb and ca != cb:
+            ev.append((b["time"], "Connected" if cb == 901 else "Not connected",
+                       f"status {CONN.get(ca, ca)} -> {CONN.get(cb, cb)}"))
+        na, nb = a.get("net_type"), b.get("net_type")
+        if na is not None and nb is not None and na != nb:
+            ev.append((b["time"], "Network type", f"{net_name(na)} -> {net_name(nb)}"))
+        xa, xb = a.get("cell_id"), b.get("cell_id")
+        if cells and xa and xb and xa != xb:
+            ev.append((b["time"], "Cell change", f"{cell_name(xa)} -> {cell_name(xb)} (eNodeB/sector)"))
+    return sorted(ev)
+
+
 def usage(samples):
     """Bytes transferred between consecutive samples, summed.
 
@@ -72,9 +123,7 @@ def usage(samples):
     value, so the new session's counter is the lower bound; take the larger.
     """
     def step(a, b, key):
-        same = b["uptime"] >= a["uptime"] and \
-            (b["time"] - a["time"]) - (b["uptime"] - a["uptime"]) < 90
-        if same and b[key] >= a[key]:
+        if same_session(a, b) and b[key] >= a[key]:
             return b[key] - a[key]
         tot = b["total_" + key] - a["total_" + key]
         return max(b[key], tot if a["total_" + key] > 0 and tot > 0 else 0)
@@ -100,12 +149,28 @@ def main():
                     help="history tier (default: auto)")
     ap.add_argument("--format", choices=("table", "csv", "json"), default="table")
     ap.add_argument("--usage", action="store_true", help="print totals for the range only")
+    ap.add_argument("--events", action="store_true",
+                    help="print the connection log for the range (default range: 7 days)")
+    ap.add_argument("--no-cells", action="store_true", help="with --events: omit cell changes")
     ap.add_argument("--status", action="store_true", help="show daemon status")
     a = ap.parse_args()
     url = f"http://{a.router}/ubus"
 
     if a.status:
         print(json.dumps(rpc(url, "status"), indent=2))
+        return
+    if a.events:
+        st = rpc(url, "status")
+        fine_oldest = st["fine"].get("oldest", 2**62)
+        coarse_iv = st.get("coarse", {}).get("interval", 3600)
+        samples = fetch(url, parse_time(a.start or "7d"), parse_time(a.end) if a.end else None, a.tier)
+        spacing = (lambda t: coarse_iv) if a.tier == "coarse" else \
+            (lambda t: coarse_iv if t < fine_oldest else st["fine"]["interval"])
+        ev = events(samples, spacing, cells=not a.no_cells)
+        for t, what, detail in ev:
+            print(f"{iso(t)}  {what:16}  {detail}")
+        if not ev:
+            print("no reconnects, gaps or changes in this range")
         return
     if a.start is None and a.end is None:
         samples = [rpc(url, "latest")["sample"]]
@@ -122,15 +187,20 @@ def main():
     elif a.format == "json":
         print(json.dumps(samples, indent=2))
     elif a.format == "csv":
-        print("time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b")
+        extra = ("rsrp", "rsrq", "sinr", "rssi", "signal_samples", "cell_id", "conn_status", "net_type")
+        print("time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b,"
+              "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type")
         for s in samples:
             print(f"{s['time']},{iso(s['time'])},{s['uptime']},{s['download']},"
-                  f"{s['upload']},{s['total_download']},{s['total_upload']}")
+                  f"{s['upload']},{s['total_download']},{s['total_upload']}," +
+                  ",".join(str(s.get(k, "")) for k in extra))
     else:
-        print(f"{'time':19}  {'session up':>12}  {'download':>12}  {'upload':>12}")
+        print(f"{'time':19}  {'session up':>16}  {'download':>10}  {'upload':>10}  {'SINR':>6}  {'RSRP':>8}  cell")
         for s in samples:
-            print(f"{iso(s['time'])}  {str(dt.timedelta(seconds=s['uptime'])):>12}  "
-                  f"{human(s['download']):>12}  {human(s['upload']):>12}")
+            sig = (f"{s['sinr']:>3} dB  {s['rsrp']:>4} dBm" if "sinr" in s else f"{'-':>6}  {'-':>8}")
+            print(f"{iso(s['time'])}  {str(dt.timedelta(seconds=s['uptime'])):>16}  "
+                  f"{human(s['download']):>10}  {human(s['upload']):>10}  {sig}  "
+                  f"{cell_name(s['cell_id']) if s.get('cell_id') else '-'}")
 
 
 if __name__ == "__main__":

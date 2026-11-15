@@ -6,7 +6,7 @@ Software and notes for a TP-Link TL-WR841N v9 running OpenWrt 15.05.1 (`192.168.
 
 | Path | What it is |
 |---|---|
-| [`huawei-trafficd/`](huawei-trafficd/README.md) | Daemon that records the Huawei's download/upload/session counters, plus the `traffic.html` dashboard and the `query.py` client |
+| [`huawei-trafficd/`](huawei-trafficd/README.md) | Daemon that records the Huawei's download/upload/session counters, LTE signal quality and connection state, plus the `traffic.html` dashboard (usage, signal, connection log) and the `query.py` client |
 | [`www/`](www/README.md) | Landing page for the router (`http://192.168.0.254/`), linking to LuCI and the dashboard |
 | [`router-ssh/`](router-ssh/README.md) | `connect`, `copy` and `tunnel` helpers for the router's old Dropbear SSH server |
 | [`docs/`](docs/) | Inventories and audits of the router, taken 2026-11-14 (see below) |
@@ -15,7 +15,7 @@ Software and notes for a TP-Link TL-WR841N v9 running OpenWrt 15.05.1 (`192.168.
 On the router:
 
 - `http://192.168.0.254/`: landing page
-- `http://192.168.0.254/traffic.html`: LTE data usage dashboard
+- `http://192.168.0.254/traffic.html`: LTE usage, signal and connection dashboard
 - `http://192.168.0.254/cgi-bin/luci`: LuCI admin (login required)
 
 ### `docs/`

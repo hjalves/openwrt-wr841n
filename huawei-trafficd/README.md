@@ -1,15 +1,15 @@
-# huawei-trafficd: LTE data usage history on OpenWrt
+# huawei-trafficd: LTE usage, signal and connection history on OpenWrt
 
-A small daemon for the TP-Link TL-WR841N v9 (OpenWrt 15.05.1, `192.168.0.254`). Once a minute it samples the traffic counters of the Huawei B310s-22 LTE router (`192.168.0.1`) and keeps a timestamped history in two tiers: every sample for the last 3 days, and one sample per hour for the last year. You can query the history over HTTP from anywhere on the LAN, or with `ubus` on the router.
+A small daemon for the TP-Link TL-WR841N v9 (OpenWrt 15.05.1, `192.168.0.254`). Once a minute it samples the traffic counters, signal quality and connection state of the Huawei B310s-22 LTE router (`192.168.0.1`) and keeps a timestamped history in two tiers: every sample for the last 3 days, and one sample per hour for the last year. You can query the history over HTTP from anywhere on the LAN, or with `ubus` on the router.
 
 ```text
 Huawei 192.168.0.1 ──HTTP (anonymous)──▶ huawei-trafficd ──ubus──▶ uhttpd /ubus ──▶ LAN clients
                                           (RAM ring buffers)     └──▶ ubus call (on router)
 ```
 
-- **Size:** a 19 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
-- **Memory:** about 810 KiB RSS measured on the router with a small history (much of it shared library pages). Each sample takes 40 bytes, so the full default history adds about 510 KiB: 170 KiB for the 3-day tier plus 340 KiB for the 1-year tier. That RAM is only used as the history fills.
-- **No credentials:** the Huawei API returns these counters to an anonymous session. The daemon fetches a session cookie from `/api/webserver/SesTokInfo`, then reads `/api/monitoring/traffic-statistics`. It reuses the cookie and gets a new one only when the Huawei rejects it.
+- **Size:** a 20 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
+- **Memory:** about 810 KiB RSS measured on the router with a small history (much of it shared library pages). Each sample takes 56 bytes, so the full default history adds about 715 KiB: 236 KiB for the 3-day tier plus 479 KiB for the 1-year tier. That RAM is only used as the history fills.
+- **No credentials:** the Huawei API returns these counters to an anonymous session. The daemon fetches a session cookie from `/api/webserver/SesTokInfo`, then reads `/api/monitoring/traffic-statistics`, `/api/device/signal` and `/api/monitoring/status` (the last two can be turned off with `signal 0`). It reuses the cookie and gets a new one only when the Huawei rejects it. If only the signal or status request fails, the traffic sample is still kept.
 - **Non-blocking:** HTTP collection runs in the same `uloop` as ubus, with a 5 s timeout, so queries are answered even when the Huawei is unreachable.
 
 ## Why ubus (through uhttpd) instead of a separate HTTP server
@@ -25,16 +25,28 @@ Each sample:
 | `time` | Unix timestamp from the OpenWrt router's clock (NTP-synchronized) |
 | `uptime` | Seconds since the current LTE session started (`CurrentConnectTime`) |
 | `download`, `upload` | Bytes in the current session (`CurrentDownload`, `CurrentUpload`). These reset when the LTE session reconnects. |
-| `total_download`, `total_upload` | Huawei's cumulative counters (`TotalDownload`, `TotalUpload`) |
+| `total_download`, `total_upload` | Huawei's cumulative counters (`TotalDownload`, `TotalUpload`). Not truly lifetime: see `--usage` below. |
+| `rsrp` | Reference signal received power, dBm: how strong the cell's signal is |
+| `rsrq` | Reference signal received quality, dB |
+| `sinr` | Signal to interference plus noise ratio, dB: the main driver of speed |
+| `rssi` | Received signal strength indicator, dBm (all power on the channel) |
+| `signal_samples` | Readings behind the signal values: 1 for a fine sample, the hour's count for a coarse one |
+| `cell_id` | LTE cell (ECI). `cell_id / 256` is the eNodeB (cell tower site) and `cell_id % 256` the sector |
+| `conn_status` | Huawei `ConnectionStatus`: 900 connecting, 901 connected, 902 disconnected, 903 disconnecting |
+| `net_type` | Huawei `CurrentNetworkType`: 19 is LTE; 1–3 are 2G and 4–18 or 41–46 are 3G |
+
+The signal and connection fields are omitted when they weren't read (with `signal 0`, if that request failed, or in history from before this feature).
 
 ### History tiers
 
 | Tier | Keeps | Default size | RAM when full |
 |---|---|---|---|
-| `fine` | Every sample (`interval`, 60 s) | 4320 samples = 3 days | ~170 KiB |
-| `coarse` | The first sample of each `coarse_interval` (1 h, aligned to the clock hour) | 8760 samples = 365 days | ~340 KiB |
+| `fine` | Every sample (`interval`, 60 s) | 4320 samples = 3 days | ~236 KiB |
+| `coarse` | The first sample of each `coarse_interval` (1 h, aligned to the clock hour) | 8760 samples = 365 days | ~479 KiB |
 
 Each tier is a ring buffer, so the oldest samples are dropped first. Coarse samples are ordinary samples (taken at e.g. 15:00:37, not exactly on the hour). All counters are cumulative, so usage between any two samples is exact; the coarse tier only loses detail *within* each hour.
+
+A single reading would say little about a whole hour, so when an hour closes, its coarse sample's signal values are replaced by the **average of that hour's readings** (`signal_samples` says how many). Its `conn_status` and `net_type` keep any non-connected status or different network type seen during the hour, so a brief disconnect or drop to 3G stays visible in the yearly history.
 
 The Huawei's own clock is not set (it reports 1970), so all timestamps come from OpenWrt. If the OpenWrt clock looks unset (before 2020), sampling is skipped and `status` reports why.
 
@@ -46,7 +58,7 @@ The Huawei's own clock is not set (it reports 1970), so all timestamps come from
 |---|---|---|
 | `latest` | none | `{"sample": {...}}`; ubus status 9 (no data) until the first sample |
 | `query` | `from`, `to`, `limit` (optional integers), `tier` (optional string) | `{"samples": [...], "count": n, "truncated": bool}` |
-| `status` | none | per tier: interval, capacity, sample count, oldest/newest time, state file; plus last error and consecutive failures |
+| `status` | none | per tier: interval, capacity, sample count, oldest/newest time, state file; plus last error, consecutive failures, whether `signal` collection is on, and the last `signal_error` |
 
 `from` and `to` are Unix timestamps (inclusive). A **negative** value is relative to now, so `{"from": -3600}` means the last hour. Samples are returned oldest first. `limit` defaults to 1000 and is capped at 4000 to keep replies under ubus's 1 MiB message limit. If `truncated` is true, ask again with `from` set to the last returned `time + 1`.
 
@@ -90,20 +102,30 @@ Reply:
 ./query.py --from 2026-11-15T08:00 --to 2026-11-15T12:00 --format csv
 ./query.py --from 1d --usage                 # bytes transferred in the last day
 ./query.py --from 30d --tier coarse --format csv   # hourly samples for 30 days
+./query.py --from 7d --events                # connection log (add --no-cells to skip cell changes)
 ./query.py --status
 ```
+
+The table and CSV include the signal and connection fields. `--events` prints the connection log, worked out from consecutive samples exactly as the dashboard does (see below).
 
 `--usage` (and the dashboard) add up the bytes between consecutive samples. Within one LTE session the session counters are exact. Across a reconnect they use the Huawei's totals, unless the new session's own counter is larger. That happens after a **Huawei crash or reboot**, which rolls its "lifetime" totals back to the last saved value: on 2026-11-15 a reboot dropped a 5½-day, 58 GB session from them. Traffic between the last sample and such a crash can't be recovered, so the result is then a lower bound.
 
 ### Web page
 
-`www/traffic.html` is a dashboard served by the router itself at **http://192.168.0.254/traffic.html**. It is a single self-contained file (26 KiB, about 8 KiB on flash after JFFS2 compression) with no external scripts or fonts, so it works without internet access. It reads the same anonymous `/ubus` methods.
+`www/traffic.html` is a dashboard served by the router itself at **http://192.168.0.254/traffic.html**. It is a single self-contained file (37 KiB, about 15 KiB on flash after JFFS2 compression) with no external scripts or fonts, so it works without internet access. It reads the same anonymous `/ubus` methods.
 
 - **Status line:** whether collection is working, the last sample time, and the last error if collection is failing.
-- **Current session:** uptime, and session download/upload with the lifetime totals.
-- **Time range:** presets for 1h, 6h, 24h, 3d, 7d, 30d and 1y, or a custom from/to. The download and upload totals for the range use lifetime counters, so they stay exact across reconnects.
+- **Current session:** uptime, session download/upload with the Huawei's totals, and **signal now**: a quality label (good / fair / poor, from SINR) with a colored dot, the SINR and RSRP values, and the cell.
+- **Time range:** presets for 1h, 6h, 24h, 3d, 7d, 30d and 1y, or a custom from/to. The download and upload totals for the range are counted per LTE session, as described for `--usage` above.
 - **Charts:** download and upload per period, as two charts with their own scales. The period grows with the range: from 1 minute (for 1h) to 1 week (for 1y). It also grows on narrow screens so each bar stays wide enough to read. Days and weeks follow your local calendar, including daylight-saving changes.
-- **Details:** hovering a bar shows the period, bytes and average rate. You can also focus a chart and use ← →, Home, End and Esc. "Show table" lists every period, and "Download CSV" exports the raw samples in the range.
+- **Signal charts:** average SINR and RSRP per period as two line charts, each with its own axis marked with quality zones (SINR: below 0 dB poor, 0–13 fair, 13–20 good, 20+ excellent; RSRP: below −100 dBm poor, −100 to −90 fair, −90 to −80 good, −80+ excellent). Periods without readings break the line. All four charts share the same x positions.
+- **Connection log:** worked out from consecutive samples:
+  - **New LTE session:** the Huawei's session uptime restarted. The start time is exact even from hourly data, because it is the sample time minus the uptime.
+  - **Collection gap:** no samples for more than 3 sampling intervals.
+  - **Status changes:** connected or not connected.
+  - **Network type changes:** for example LTE to 3G.
+  - **Cell changes:** shown as eNodeB/sector. These can be frequent, so they are listed only when there are 20 or fewer in the range, or when "Show cell changes" is ticked. The summary line always counts them.
+- **Details:** hovering a chart shows the period, bytes, average rate and average signal for that period. You can also focus a chart and use ← →, Home, End and Esc. "Show table" lists every period, including average SINR and RSRP, and "Download CSV" exports the raw samples in the range with every field.
 - **Gaps:** where the daemon wasn't collecting, the bytes across the gap are known in total but not their timing. Those bars are faded, and their tooltip says how long the gap was.
 - **Empty periods:** periods before the history starts, or with no samples yet, show no bar, as opposed to a zero bar.
 - **Refresh and theme:** preset ranges refresh every minute. Light and dark mode follow the device setting.
@@ -117,6 +139,7 @@ Long ranges read the hourly tier when it reaches back far enough, in pages of 10
 | Option | Default | Notes |
 |---|---|---|
 | `host`, `port` | `192.168.0.1`, `80` | Huawei address (numeric IPv4) |
+| `signal` | `1` | Also read signal quality and connection status (two more anonymous requests per sample). `0` collects traffic counters only. |
 | `interval` | `60` | Seconds between samples (5–86400) |
 | `history` | `4320` | Fine-tier samples kept in RAM |
 | `coarse_interval` | `3600` | Seconds per coarse sample; must be longer than `interval`. `0` disables the coarse tier. |
@@ -127,14 +150,14 @@ Long ranges read the hourly tier when it reaches back far enough, in pages of 10
 
 Apply changes with `/etc/init.d/huawei-trafficd restart`.
 
-State files written by the first version (one tier) still load: they become the fine tier, and the coarse tier is rebuilt from them.
+State files from earlier versions still load. A one-tier file becomes the fine tier, and the coarse tier is rebuilt from it. Samples from before signal collection have no signal fields.
 
 ### Keeping history across reboots
 
 Both files are in `/tmp` by default, which is RAM, so **a reboot loses the history**. Saving to flash is limited by this router's small JFFS2 overlay (about 280–300 KiB free):
 
-- A full year of coarse history is 342 KiB, which doesn't fit. JFFS2 compression might bring it to roughly 190–260 KiB (estimated on synthetic data). But the save writes a new file before replacing the old one, so it briefly needs room for two copies. **Don't point a full-year coarse tier at flash.**
-- What fits safely: put `coarse_state_file` on flash with a shorter `coarse_history`, for example `2160` (90 days, 86 KiB), and set `save_every` to `3600`. JFFS2 spreads writes across the flash, so an hourly save is a modest amount of wear.
+- A full year of coarse history is 479 KiB, which doesn't fit even with JFFS2 compression. But the save writes a new file before replacing the old one, so it briefly needs room for two copies. **Don't point a full-year coarse tier at flash.**
+- What fits safely: put `coarse_state_file` on flash with a shorter `coarse_history`, for example `1440` (60 days, 79 KiB), and set `save_every` to `3600`. JFFS2 spreads writes across the flash, so an hourly save is a modest amount of wear.
 - For a full year that survives reboots, copy the history off the router regularly (for example a scheduled `query.py --tier coarse --format csv` on another machine).
 
 Daemon options: `huawei-trafficd -h`. It logs to syslog (`logread | grep huawei-trafficd`), only when sampling starts failing and when it recovers.
@@ -198,6 +221,12 @@ rm /usr/sbin/huawei-trafficd /etc/init.d/huawei-trafficd /etc/config/huawei-traf
 - A native build was run against host builds of libubox and ubus at the router's exact commits. That test covered every method, ring-buffer eviction, relative `from`, `limit`/`truncated`, invalid arguments, saving and reloading the history, and errors for a refused connection and for a timeout.
 - **Two-tier update:** the native build was tested with a 5-second sampling interval and a 12-second coarse bucket, with small capacities. That covered bucket boundaries, eviction in both tiers, the `auto` merge at the tier boundary, `tier` selection and validation, pagination across tiers, saving and reloading both files, and migrating a version-1 file (10 half-hourly samples became 5 hourly samples). The update was installed on the router by replacing the binary, init script and config. The existing history carried over, overlay use was 268 KiB afterwards, and RSS was 812 KiB.
 - **Web page:** rendered in Chromium against a mock server holding a year of synthetic data, including a 6-hour collection gap. Every preset was checked in light and dark mode, plus a custom range, a 390 px phone layout (no sideways scrolling), keyboard navigation, the table, and the Europe/Lisbon daylight-saving boundary for week buckets. It was then installed at `/www/traffic.html` and loaded from the router with real data, with no console errors.
+- **Signal and connection update:**
+  - **Soak test:** the Huawei rebooted 3 times on 2026-11-15, shortly after a one-off probe of several of its API endpoints. The cause wasn't established, so before deploying, `device/signal` and `monitoring/status` were polled from the LAN once a minute for 20 minutes. The Huawei's session uptime rose steadily throughout, with no reboots or reconnects.
+  - **Native test:** a native build ran against a mock Huawei that could fail each endpoint on demand (error, garbage or timeout). In every case the traffic sample was kept and `signal_error` was reported.
+  - **Also checked:** hourly averaging (6 readings of −100/−110 dBm averaged to −107), status, network-type and cell changes, uptime resets, loading old-format files, and `-G` sending only the two traffic requests.
+  - **Dashboard:** rendered against a year of mock data with a reboot, a disconnect, a 3G spell, cell changes and a gap, in light, dark and phone layouts.
+  - **On the router:** the upgrade loaded the existing 225 + 4 samples. The connection log shows the three real Huawei reboots of 15:34–15:41.
 - Installed on the router as above (overlay use went from 284 to 292 KiB). The service is enabled at boot and running. `ubus call` and anonymous HTTP `latest`/`query` work, while anonymous `system.info` is still `Access denied`. History survived `/etc/init.d/huawei-trafficd restart`.
 
 ## Security notes

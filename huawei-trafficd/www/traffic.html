@@ -9,8 +9,8 @@
 <title>LTE data usage</title>
 <link rel="icon" href="data:,">
 <style>
-:root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5;--series-2:#d95926}}
+:root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--series-3:#1baf7a;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5;--series-2:#d95926;--series-3:#199e70}}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--page)}
 .viz-root{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text-primary);background:var(--page);max-width:1100px;margin:0 auto;padding:20px 16px 40px}
@@ -65,7 +65,18 @@ th{color:var(--text-secondary);font-weight:600}
 .tip .r b{font-weight:600;font-size:13px}
 .tip .r span{color:var(--text-secondary)}
 .s1.est,.s2.est{fill-opacity:.38}
-@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
+.k3{background:var(--series-3)}
+.chart .line{fill:none;stroke:var(--series-3);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .pt{fill:var(--series-3);stroke:var(--surface-1);stroke-width:2}
+.chart .zone{fill:var(--muted);font-size:10px}
+#cellsLbl{display:inline-flex;align-items:center;gap:6px;margin:0 0 8px;cursor:pointer}#cellsLbl[hidden]{display:none}
+.log{max-height:340px;overflow:auto;border-radius:8px}
+.log table{border:0;border-radius:0}
+.log th,.log td{vertical-align:top;text-align:left}
+.log td:first-child{white-space:nowrap;color:var(--text-secondary)}
+.log td:nth-child(2){white-space:nowrap;font-weight:600}
+.log td:last-child{color:var(--text-secondary);text-align:left}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tiles.now{grid-template-columns:repeat(2,1fr)}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
 </style>
 </head>
 <body>
@@ -75,10 +86,11 @@ th{color:var(--text-secondary);font-weight:600}
   <p class="status" id="status" role="status">Loading…</p>
 </header>
 
-<section class="tiles" aria-label="Current LTE session">
+<section class="tiles now" aria-label="Current LTE session">
   <div class="tile"><div class="label">Session uptime</div><div class="value" id="tUp">–</div><div class="sub" id="tUpSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k1"></span>Session download</div><div class="value" id="tSd">–</div><div class="sub" id="tSdSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k2"></span>Session upload</div><div class="value" id="tSu">–</div><div class="sub" id="tSuSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k3"></span>Signal now</div><div class="value" id="tSig">–</div><div class="sub" id="tSigSub">&nbsp;</div></div>
 </section>
 
 <nav class="filters" aria-label="Time range">
@@ -107,14 +119,30 @@ th{color:var(--text-secondary);font-weight:600}
   <p class="note" id="nU">&nbsp;</p>
   <div class="chart" id="cU" tabindex="0" aria-describedby="kbd"></div>
 </section>
+<section class="card">
+  <h2 id="hS">Signal quality (SINR)</h2>
+  <p class="note" id="nS">&nbsp;</p>
+  <div class="chart" id="cS" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
+  <h2 id="hR">Signal strength (RSRP)</h2>
+  <p class="note" id="nR">&nbsp;</p>
+  <div class="chart" id="cR" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
+  <h2>Connection log</h2>
+  <p class="note" id="logSum">&nbsp;</p>
+  <label class="note" id="cellsLbl" hidden><input type="checkbox" id="cells"> Show cell changes</label>
+  <div class="log"><table id="logTbl"><thead><tr><th>Time</th><th>Event</th><th>Details</th></tr></thead><tbody></tbody></table></div>
+</section>
 
 <div class="tools">
   <button class="btn" id="tblBtn" aria-expanded="false" aria-controls="tbl">Show table</button>
   <button class="btn" id="csvBtn">Download CSV (raw samples)</button>
-  <span class="hint" id="kbd">Hover a bar, or focus a chart and use ← → for details.</span>
+  <span class="hint" id="kbd">Hover a chart, or focus one and use ← → for details.</span>
 </div>
 <table id="tbl" hidden>
-  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th></tr></thead>
+  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th></tr></thead>
   <tbody></tbody>
 </table>
 </div>
@@ -130,6 +158,8 @@ const H = 3600, D = 86400;
 const PRESETS = [["1h", H, 60], ["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H],
                  ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
 const BUCKETS = [60, 300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
+const CHARTS = ["cD", "cU", "cS", "cR"];
+const CHART_MR = 58;  // right margin, shared so all charts line up; holds zone names
 const PAGE = 1000;  // samples per request; keeps each router reply ~150 KB
 
 let state = {preset: "24h", from: 0, to: 0, bucket: 900};
@@ -211,10 +241,14 @@ function bucketEdges(from, to, b) {
 // Huawei's "total" counters cover a clean reconnect, but a Huawei crash or
 // reboot rolls them back to the last saved value; the new session's own
 // counter is then the best lower bound. Take whichever is larger.
+// Same LTE session: the Huawei's session uptime advanced by the elapsed time.
+function sameSession(a, b) {
+  const dt = b.time - a.time;
+  return b.uptime >= a.uptime && dt - (b.uptime - a.uptime) < 90;
+}
 function delta(a, b, k) {
-  const dt = b.time - a.time, tk = "total_" + k;
-  const same = b.uptime >= a.uptime && dt - (b.uptime - a.uptime) < 90;
-  if (same && b[k] >= a[k]) return b[k] - a[k];
+  const tk = "total_" + k;
+  if (sameSession(a, b) && b[k] >= a[k]) return b[k] - a[k];
   const tot = b[tk] - a[tk];
   return Math.max(b[k], a[tk] > 0 && tot > 0 ? tot : 0);
 }
@@ -242,7 +276,62 @@ function buildBuckets(samples, from, to, b, spacing) {
       totD += dd * f; totU += du * f;
     }
   }
+  // Signal: weighted average of readings per bucket (hourly samples carry
+  // the average of signal_samples readings over their hour).
+  let j = 0;
+  for (const x of bk) { x.sw = 0; x.sinr = 0; x.rsrp = 0; x.rsrq = 0; }
+  for (const sm of samples) {
+    if (sm.rsrp == null || sm.time < from || sm.time >= to) continue;
+    while (j < bk.length && bk[j].e <= sm.time) j++;
+    if (j >= bk.length) break;
+    if (sm.time < bk[j].t) continue;
+    const w = sm.signal_samples || 1, x = bk[j];
+    x.sw += w; x.sinr += sm.sinr * w; x.rsrp += sm.rsrp * w; x.rsrq += sm.rsrq * w;
+  }
+  for (const x of bk) for (const k of ["sinr", "rsrp", "rsrq"]) x[k] = x.sw ? x[k] / x.sw : null;
   return {bk, b, totD, totU};
+}
+
+// ---- signal quality and connection events ----
+// Common LTE rules of thumb: SINR drives throughput, RSRP is received power.
+const SIG = {
+  sinr: {name: "SINR", unit: "dB", lo: -10, hi: 30, zones: [[0, "fair"], [13, "good"], [20, "excellent"]]},
+  rsrp: {name: "RSRP", unit: "dBm", lo: -125, hi: -65, zones: [[-100, "fair"], [-90, "good"], [-80, "excellent"]]},
+};
+function quality(k, v) {
+  let q = "poor";
+  for (const [t, name] of SIG[k].zones) if (v >= t) q = name;
+  return q;
+}
+const QCOLOR = {excellent: "--good", good: "--good", fair: "--warning", poor: "--critical"};
+const sig = (k, v) => `${nf(v, Math.abs(v) < 10 && !Number.isInteger(v) ? 1 : 0)} ${SIG[k].unit}`;
+const NET = t => t === 19 || t === 101 ? "LTE" : t === 0 ? "no service" : t >= 1 && t <= 3 ? "2G" :
+  (t >= 4 && t <= 18) || (t >= 41 && t <= 46) ? "3G" : "type " + t;
+const CONN = {900: "connecting", 901: "connected", 902: "disconnected", 903: "disconnecting"};
+const connName = c => CONN[c] || "status " + c;
+const cellName = c => `${Math.floor(c / 256)}/${c % 256}`;  // eNodeB / sector
+
+function connEvents(samples, from, to, spacing) {
+  const ev = [];
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i], dt = b.time - a.time;
+    if (b.time < from || b.time > to || dt <= 0) continue;
+    const gap = dt > 3 * spacing(a.time);
+    if (!sameSession(a, b))
+      ev.push({t: b.time - b.uptime, kind: "session", ev: "New LTE session",
+               d: (gap ? `No samples for ${duration(dt)} before it (Huawei or collector unreachable). ` : "") +
+                  `The previous session had lasted at least ${duration(a.uptime)}.`});
+    else if (gap)
+      ev.push({t: a.time, kind: "gap", ev: "Collection gap", d: `No samples for ${duration(dt)}; the LTE session continued.`});
+    if (a.conn_status && b.conn_status && a.conn_status !== b.conn_status)
+      ev.push({t: b.time, kind: "status", ev: b.conn_status === 901 ? "Connected" : "Not connected",
+               d: `Status ${connName(a.conn_status)} → ${connName(b.conn_status)}`});
+    if (a.net_type != null && b.net_type != null && a.net_type !== b.net_type)
+      ev.push({t: b.time, kind: "net", ev: "Network type", d: `${NET(a.net_type)} → ${NET(b.net_type)}`});
+    if (a.cell_id && b.cell_id && a.cell_id !== b.cell_id)
+      ev.push({t: b.time, kind: "cell", ev: "Cell change", d: `${cellName(a.cell_id)} → ${cellName(b.cell_id)} (eNodeB/sector)`});
+  }
+  return ev.sort((x, y) => y.t - x.t);
 }
 
 // ---- charts ----
@@ -286,7 +375,7 @@ function xLabel(t, b, prev) {
 
 function drawChart(box, data, key, cls, histStart) {
   box.textContent = "";
-  const W = Math.max(280, box.clientWidth), PH = 170, AX = 22, ML = 58, MR = 6, MT = 8;
+  const W = Math.max(280, box.clientWidth), PH = 170, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
   const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
   const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
                          "aria-label": `${key === "d" ? "Download" : "Upload"} per ${bucketName(data.b)}`}, box);
@@ -307,30 +396,76 @@ function drawChart(box, data, key, cls, histStart) {
     const r = Math.min(4, bw / 2, h);
     el("path", {class: cls + (x.est > x.cov / 2 ? " est" : ""), d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
   });
-  const step = xStep(n, data.b, pw);
+  if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
+               histStart ? "No traffic recorded in this range" : "No data in this range");
+  finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
+}
+
+// x-axis labels, and the hover layer shared by every chart (one index for all)
+function finishChart(box, svg, data, g) {
+  const n = data.bk.length, step = xStep(n, data.b, g.pw);
   let prev = null;
   data.bk.forEach((x, i) => {
     if (!onStep(x.t, i, data.b, step)) return;
-    const cx = ML + i * slot + slot / 2;
-    if (cx < ML + 18 || cx > W - MR - 18) return;
-    el("text", {x: cx, y: MT + PH + 16, "text-anchor": "middle"}, svg, xLabel(x.t, data.b, prev));
+    const cx = g.ML + i * g.slot + g.slot / 2;
+    if (cx < g.ML + 18 || cx > g.W - g.MR - 18) return;
+    el("text", {x: cx, y: g.MT + g.PH + 16, "text-anchor": "middle"}, svg, xLabel(x.t, data.b, prev));
     prev = x.t;
   });
-  if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
-               histStart ? "No traffic recorded in this range" : "No data in this range");
-  const hit = el("rect", {x: ML, y: MT, width: pw, height: PH + AX, fill: "transparent"}, svg);
+  const hit = el("rect", {x: g.ML, y: g.MT, width: g.pw, height: g.PH + g.AX, fill: "transparent"}, svg);
   hit.addEventListener("pointermove", e => {
-    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
-    setHover(Math.min(n - 1, Math.max(0, Math.floor((px - ML) / slot))), e.clientX, e.clientY);
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * g.W / r.width;
+    setHover(Math.min(n - 1, Math.max(0, Math.floor((px - g.ML) / g.slot))), e.clientX, e.clientY);
   });
   hit.addEventListener("pointerleave", () => setHover(-1));
-  box._band = {band, ML, slot, svg, W};
+  box._band = {band: g.band, ML: g.ML, slot: g.slot, svg, W: g.W};
+}
+
+// Average signal per period as a line; the axis is marked with quality zones.
+function drawLine(box, data, k) {
+  box.textContent = "";
+  const spec = SIG[k], W = Math.max(280, box.clientWidth), PH = 130, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
+  const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
+  const vals = data.bk.map(x => x[k]).filter(v => v != null);
+  const lo = Math.min(spec.lo, Math.floor(Math.min(...vals, spec.lo) / 5) * 5);
+  const hi = Math.max(spec.hi, Math.ceil(Math.max(...vals, spec.hi) / 5) * 5);
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `Average ${spec.name} per ${bucketName(data.b)}`}, box);
+  const y = v => MT + PH - (v - lo) / (hi - lo) * PH;
+  el("line", {x1: ML, x2: W - MR, y1: y(lo), y2: y(lo), class: "base"}, svg);
+  el("text", {x: ML - 8, y: y(lo) + 4, "text-anchor": "end"}, svg, `${lo} ${spec.unit}`);
+  const edges = [lo, ...spec.zones.map(z => z[0]), hi], names = ["poor", ...spec.zones.map(z => z[1])];
+  spec.zones.forEach(([t]) => {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: "grid"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, `${t} ${spec.unit}`);
+  });
+  names.forEach((nm, i) => {  // zone name, right-aligned in its band
+    const yt = y(edges[i + 1]), yb = y(edges[i]);
+    if (yb - yt >= 11) el("text", {class: "zone", x: W - MR + 8, y: (yt + yb) / 2 + 3}, svg, nm);
+  });
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  let d = "", run = [];
+  const flush = () => {
+    if (run.length === 1) el("circle", {class: "pt", cx: run[0][0], cy: run[0][1], r: 4}, svg);
+    run = [];
+  };
+  data.bk.forEach((x, i) => {
+    if (x[k] == null) { flush(); return; }
+    const p = [ML + i * slot + slot / 2, y(x[k])];
+    d += (run.length ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1);
+    run.push(p);
+  });
+  flush();
+  if (d) el("path", {class: "line", d}, svg);
+  if (!vals.length) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
+                       "No signal readings in this range");
+  finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
 function setHover(i, cx, cy) {
   hoverIdx = i;
   const tip = $("tip");
-  for (const id of ["cD", "cU"]) {
+  for (const id of CHARTS) {
     const c = $(id)._band;
     if (c) c.band.setAttribute("x", i < 0 ? -999 : c.ML + i * c.slot);
   }
@@ -341,18 +476,28 @@ function setHover(i, cx, cy) {
   t.className = "t";
   t.textContent = periodLabel(x.t, x.e);
   tip.appendChild(t);
-  if (!x.cov) {
+  if (!x.cov && !x.sw) {
     const r = document.createElement("div");
     r.textContent = "No data";
     tip.appendChild(r);
   } else {
-    for (const [k, name, color] of [["d", "Download", "--series-1"], ["u", "Upload", "--series-2"]]) {
+    if (x.cov) for (const [k, name, color] of [["d", "Download", "--series-1"], ["u", "Upload", "--series-2"]]) {
       const r = document.createElement("div"), key = document.createElement("i"),
             v = document.createElement("b"), s = document.createElement("span");
       r.className = "r";
       key.style.background = `var(${color})`;
       v.textContent = bytes(x[k]);
       s.textContent = `${name} · ${rate(x[k] / x.cov)} avg`;
+      r.append(key, v, s);
+      tip.appendChild(r);
+    }
+    if (x.sw) for (const k of ["sinr", "rsrp"]) {
+      const r = document.createElement("div"), key = document.createElement("i"),
+            v = document.createElement("b"), s = document.createElement("span");
+      r.className = "r";
+      key.style.background = "var(--series-3)";
+      v.textContent = sig(k, Math.round(x[k]));
+      s.textContent = `${SIG[k].name} avg · ${quality(k, x[k])}`;
       r.append(key, v, s);
       tip.appendChild(r);
     }
@@ -382,7 +527,7 @@ function setHover(i, cx, cy) {
   tip.style.top = Math.max(4, Math.min(innerHeight - th - 4, cy - th - 10)) + "px";
 }
 
-for (const id of ["cD", "cU"]) {
+for (const id of CHARTS) {
   $(id).addEventListener("keydown", e => {
     if (!view) return;
     const n = view.data.bk.length;
@@ -425,6 +570,19 @@ function renderLatest(x) {
   setText("tSdSub", "lifetime " + bytes(x.total_download));
   setText("tSu", bytes(x.upload));
   setText("tSuSub", "lifetime " + bytes(x.total_upload));
+  const v = $("tSig");
+  v.textContent = "";
+  if (x.sinr == null) {
+    v.textContent = "–";
+    setText("tSigSub", "not collected");
+    return;
+  }
+  const q = quality("sinr", x.sinr), dot = document.createElement("span");
+  dot.className = "dot";
+  dot.style.background = `var(${QCOLOR[q]})`;
+  v.append(dot, document.createTextNode(q[0].toUpperCase() + q.slice(1)));
+  setText("tSigSub", `SINR ${sig("sinr", x.sinr)} · RSRP ${sig("rsrp", x.rsrp)}` +
+          (x.cell_id ? ` · cell ${cellName(x.cell_id)}` : ""));
 }
 
 function renderRange() {
@@ -451,15 +609,51 @@ function renderRange() {
   setText("nU", note);
   drawChart($("cD"), data, "d", "s1", histStart);
   drawChart($("cU"), data, "u", "s2", histStart);
+  setText("hS", `Signal quality (SINR), average per ${per}`);
+  setText("hR", `Signal strength (RSRP), average per ${per}`);
+  setText("nS", "Higher is better. SINR mostly decides speed: below 0 dB is poor, 13 dB and up is good.");
+  setText("nR", "Higher (less negative) is better: received power from the cell, below −100 dBm is poor.");
+  drawLine($("cS"), data, "sinr");
+  drawLine($("cR"), data, "rsrp");
+  renderLog();
   const tb = $("tbl").tBodies[0];
   tb.textContent = "";
   for (const x of data.bk) {
     const tr = tb.insertRow();
     const cells = [periodLabel(x.t, x.e)].concat(x.cov
-      ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"]);
+      ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"],
+      x.sw ? [sig("sinr", Math.round(x.sinr)), sig("rsrp", Math.round(x.rsrp))] : ["–", "–"]);
     for (const c of cells) tr.insertCell().textContent = c;
   }
 }
+
+function renderLog() {
+  const ev = connEvents(view.samples, view.from, view.to, view.spacing);
+  const counts = {};
+  for (const e of ev) counts[e.kind] = (counts[e.kind] || 0) + 1;
+  const names = {session: ["new session", "new sessions"], gap: ["collection gap", "collection gaps"],
+                 status: ["status change", "status changes"], net: ["network type change", "network type changes"],
+                 cell: ["cell change", "cell changes"]};
+  setText("logSum", ev.length ? Object.keys(names).filter(k => counts[k])
+    .map(k => `${counts[k]} ${names[k][counts[k] === 1 ? 0 : 1]}`).join(" · ") + " in this range, newest first."
+    : "No reconnects, gaps or changes in this range.");
+  // Cell handovers can be frequent; list them only when few, or on request.
+  const nCells = counts.cell || 0;
+  if (showCells == null) $("cells").checked = nCells <= 20;
+  $("cellsLbl").hidden = !nCells;
+  const shown = ev.filter(e => e.kind !== "cell" || $("cells").checked);
+  const tb = $("logTbl").tBodies[0];
+  tb.textContent = "";
+  for (const e of shown.slice(0, 300)) {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = tFull(e.t);
+    tr.insertCell().textContent = e.ev;
+    tr.insertCell().textContent = e.d;
+  }
+  $("logTbl").parentNode.hidden = !shown.length;
+}
+let showCells = null;  // null: automatic (on when few)
+$("cells").addEventListener("change", () => { showCells = $("cells").checked; if (view) renderLog(); });
 
 function pickBucket(span, minB) {
   return BUCKETS.find(b => b >= minB && span / b <= 120) || 7 * D;
@@ -544,11 +738,14 @@ $("tblBtn").addEventListener("click", () => {
 });
 $("csvBtn").addEventListener("click", () => {
   if (!view) return;
-  const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b"];
+  const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b," +
+                "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type"];
+  const o = v => v == null ? "" : v;
   for (const s of view.samples)
     if (s.time >= view.from && s.time <= view.to)
       rows.push([s.time, new Date(s.time * 1000).toISOString(), s.uptime, s.download, s.upload,
-                 s.total_download, s.total_upload].join(","));
+                 s.total_download, s.total_upload, o(s.rsrp), o(s.rsrq), o(s.sinr), o(s.rssi),
+                 o(s.signal_samples), o(s.cell_id), o(s.conn_status), o(s.net_type)].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
   a.download = `lte-usage-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;

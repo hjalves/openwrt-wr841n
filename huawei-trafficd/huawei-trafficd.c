@@ -3,7 +3,9 @@
  * HiLink LTE router and expose the history on ubus as "huawei.traffic".
  *
  * Collection: GET /api/webserver/SesTokInfo (anonymous session cookie), then
- * GET /api/monitoring/traffic-statistics with that cookie. No login needed.
+ * GET /api/monitoring/traffic-statistics with that cookie and, unless -G is
+ * given, /api/device/signal and /api/monitoring/status for signal quality
+ * and connection state. No login needed.
  * Everything is non-blocking inside a single uloop, so ubus calls are never
  * held up by a slow or unreachable Huawei router.
  *
@@ -40,7 +42,11 @@
 #define QUERY_DEFAULT_MAX 1000
 #define QUERY_HARD_MAX    4000        /* keeps replies well under ubus' 1 MiB */
 #define STATE_MAGIC       0x48545246u /* "HTRF" */
-#define STATE_VERSION     2u          /* v2 adds the tier interval; v1 still loads */
+#define STATE_VERSION     3u          /* v3: 56-byte samples with signal; v1/v2 still load */
+#define SIG_NONE          (-128)      /* unknown rsrq/sinr/rssi */
+#define RSRP_NONE         INT16_MIN   /* unknown rsrp */
+#define NET_NONE          255         /* unknown network type */
+#define CONNECTED         901         /* Huawei ConnectionStatus: connected */
 
 struct sample {
 	uint32_t time;          /* Unix time on the OpenWrt router */
@@ -49,12 +55,43 @@ struct sample {
 	uint64_t upload;        /* CurrentUpload, bytes this session */
 	uint64_t total_download;
 	uint64_t total_upload;
+	/* Signal and connection state. Fine samples hold the reading taken with
+	 * the counters; a coarse sample holds the average over its period (sig_n
+	 * readings) and any non-connected status / other network type seen. */
+	uint32_t cell_id;       /* 0 = unknown */
+	uint16_t conn_status;   /* ConnectionStatus, 901 = connected; 0 = unknown */
+	int16_t rsrp;           /* dBm */
+	int8_t rsrq, sinr, rssi;/* dB, dB, dBm */
+	uint8_t net_type;       /* CurrentNetworkType, 19 = LTE */
+	uint8_t sig_n;          /* signal readings behind rsrp..rssi; 0 = none */
+	uint8_t reserved[3];
 };
+
+/* State files store samples as raw structs: the size must not change silently. */
+typedef char sample_is_56_bytes[sizeof(struct sample) == 56 ? 1 : -1];
+
+/* The 40-byte sample of state file versions 1 and 2. */
+struct sample_v2 {
+	uint32_t time, uptime;
+	uint64_t download, upload, total_download, total_upload;
+};
+
+static void sample_clear_signal(struct sample *s)
+{
+	s->cell_id = 0;
+	s->conn_status = 0;
+	s->rsrp = RSRP_NONE;
+	s->rsrq = s->sinr = s->rssi = SIG_NONE;
+	s->net_type = NET_NONE;
+	s->sig_n = 0;
+	memset(s->reserved, 0, sizeof(s->reserved));
+}
 
 /* ---- configuration ---- */
 static const char *cfg_host = "192.168.0.1";
 static const char *cfg_port = "80";
 static const char *cfg_socket;     /* ubus socket, NULL = default */
+static bool cfg_signal = true;     /* also read device/signal + monitoring/status */
 static unsigned cfg_save_every;    /* seconds, 0 = only on exit */
 
 /*
@@ -79,6 +116,7 @@ static struct ring coarse = { .name = "coarse", .interval = 3600, .cap = 8760 };
 static uint32_t last_attempt, last_success;
 static unsigned failures;  /* consecutive */
 static char last_error[96];
+static char signal_error[96];  /* last signal/status read problem, if any */
 
 static void ring_push(struct ring *r, const struct sample *s)
 {
@@ -94,14 +132,62 @@ static const struct sample *ring_at(const struct ring *r, unsigned i) /* 0 = old
 	return &r->buf[(r->head + i) % r->cap];
 }
 
+static long div_round(long sum, unsigned n)  /* nearest, halves away from 0 */
+{
+	return sum >= 0 ? (sum + (long)n / 2) / (long)n : -((-sum + (long)n / 2) / (long)n);
+}
+
+/*
+ * Close a coarse sample's period [c->time, end): replace its single signal
+ * reading with the average of the fine samples in that period, and keep any
+ * non-connected status or different network type seen during it.
+ */
+static void coarse_finalize(struct sample *c, uint32_t end)
+{
+	long rsrp = 0, rsrq = 0, sinr = 0, rssi = 0;
+	unsigned n = 0, i;
+
+	for (i = fine.count; i-- > 0;) {
+		const struct sample *f = ring_at(&fine, i);
+
+		if (f->time < c->time)
+			break;
+		if (f->time >= end)
+			continue;
+		if (f->conn_status && f->conn_status != CONNECTED)
+			c->conn_status = f->conn_status;
+		if (f->net_type != NET_NONE && f->net_type != c->net_type)
+			c->net_type = f->net_type;
+		if (!f->sig_n || f->rsrp == RSRP_NONE)
+			continue;
+		rsrp += f->rsrp;
+		rsrq += f->rsrq;
+		sinr += f->sinr;
+		rssi += f->rssi;
+		n++;
+	}
+	if (!n)
+		return;
+	c->rsrp = (int16_t)div_round(rsrp, n);
+	c->rsrq = (int8_t)div_round(rsrq, n);
+	c->sinr = (int8_t)div_round(sinr, n);
+	c->rssi = (int8_t)div_round(rssi, n);
+	c->sig_n = n > 255 ? 255 : (uint8_t)n;
+}
+
 /* Keep s in the coarse tier if it starts a new coarse_interval bucket. */
 static void coarse_offer(const struct sample *s)
 {
+	struct sample *last;
+
 	if (!coarse.interval)
 		return;
-	if (coarse.count &&
-	    ring_at(&coarse, coarse.count - 1)->time / coarse.interval == s->time / coarse.interval)
-		return;
+	if (coarse.count) {
+		last = &coarse.buf[(coarse.head + coarse.count - 1) % coarse.cap];
+		if (last->time / coarse.interval == s->time / coarse.interval)
+			return;
+		coarse_finalize(last, s->time);
+	}
 	ring_push(&coarse, s);
 }
 
@@ -165,17 +251,34 @@ static void ring_load(struct ring *r)
 		return;
 	/* v1: magic, version, count. v2 adds the tier interval. */
 	if (fread(hdr, sizeof(uint32_t), 3, f) != 3 || hdr[0] != STATE_MAGIC ||
-	    (hdr[1] != 1 && hdr[1] != 2) ||
-	    (hdr[1] == 2 && fread(&hdr[3], sizeof(uint32_t), 1, f) != 1)) {
+	    hdr[1] < 1 || hdr[1] > STATE_VERSION ||
+	    (hdr[1] >= 2 && fread(&hdr[3], sizeof(uint32_t), 1, f) != 1)) {
 		syslog(LOG_WARNING, "ignoring unrecognised state file %s", r->state);
 		fclose(f);
 		return;
 	}
-	if (hdr[1] == 2 && hdr[3] != r->interval)
+	if (hdr[1] >= 2 && hdr[3] != r->interval)
 		syslog(LOG_NOTICE, "%s was recorded at %us intervals, now %us",
 		       r->state, hdr[3], r->interval);
-	for (i = 0; i < hdr[2] && fread(&s, sizeof(s), 1, f) == 1; i++)
+	for (i = 0; i < hdr[2]; i++) {
+		if (hdr[1] >= 3) {
+			if (fread(&s, sizeof(s), 1, f) != 1)
+				break;
+		} else {  /* older 40-byte samples: no signal data */
+			struct sample_v2 o;
+
+			if (fread(&o, sizeof(o), 1, f) != 1)
+				break;
+			s.time = o.time;
+			s.uptime = o.uptime;
+			s.download = o.download;
+			s.upload = o.upload;
+			s.total_download = o.total_download;
+			s.total_upload = o.total_upload;
+			sample_clear_signal(&s);
+		}
 		ring_push(r, &s);  /* keeps only the newest r->cap */
+	}
 	syslog(LOG_INFO, "loaded %u %s samples from %s", r->count, r->name, r->state);
 	fclose(f);
 }
@@ -206,7 +309,7 @@ static void save_timer_cb(struct uloop_timeout *t)
 /* Non-blocking HTTP client for the Huawei API                        */
 /* ------------------------------------------------------------------ */
 
-enum stage { STAGE_TOKEN, STAGE_STATS };
+enum stage { STAGE_TOKEN, STAGE_STATS, STAGE_SIGNAL, STAGE_STATUS };
 
 static struct {
 	struct uloop_fd fd;
@@ -217,6 +320,8 @@ static struct {
 	size_t req_len, sent;
 	char buf[HTTP_BUF_SIZE];
 	size_t len;
+	bool have_pending;       /* counters read; signal/status may follow */
+	struct sample pending;
 } http;
 
 static char cookie[COOKIE_SIZE]; /* "SessionID=..." */
@@ -235,11 +340,21 @@ static void http_close(void)
 	}
 }
 
+static void finish_sample(void);
+
 static void sample_failed(const char *fmt, ...)
 {
 	va_list ap;
 
 	http_close();
+	if (http.have_pending) {
+		/* Counters were read; only signal/status failed. Keep the sample. */
+		va_start(ap, fmt);
+		vsnprintf(signal_error, sizeof(signal_error), fmt, ap);
+		va_end(ap);
+		finish_sample();
+		return;
+	}
 	http.busy = false;
 	va_start(ap, fmt);
 	vsnprintf(last_error, sizeof(last_error), fmt, ap);
@@ -277,6 +392,38 @@ static bool xml_u64(const char *body, const char *tag, uint64_t *v)
 	return !errno && *end == '\0';
 }
 
+/* Integer from text like "-96dBm", ">=-51dBm" or "8dB". */
+static bool xml_int(const char *body, const char *tag, long *v)
+{
+	char text[32], *p, *end;
+
+	if (!xml_text(body, tag, text, sizeof(text)))
+		return false;
+	p = text + strcspn(text, "-0123456789");
+	if (!*p)
+		return false;
+	*v = strtol(p, &end, 10);
+	return end != p && (*p != '-' || end != p + 1);
+}
+
+static int8_t clamp8(long v)
+{
+	return v < -127 ? -127 : v > 127 ? 127 : (int8_t)v;  /* -128 means unknown */
+}
+
+static void finish_sample(void)
+{
+	http_close();
+	http.busy = false;
+	http.have_pending = false;
+	record_sample(&http.pending);
+	last_success = http.pending.time;
+	if (failures)
+		syslog(LOG_NOTICE, "sampling recovered after %u failures", failures);
+	failures = 0;
+	last_error[0] = '\0';
+}
+
 /* Returns pointer to body, or NULL if headers are incomplete. */
 static char *http_body(size_t *content_length, bool *have_length)
 {
@@ -297,11 +444,12 @@ static char *http_body(size_t *content_length, bool *have_length)
 
 static void handle_response(void)
 {
-	struct sample s;
+	struct sample *s = &http.pending;
 	char *body, code[16];
 	size_t cl;
 	bool have_cl;
 	uint64_t v;
+	long l, a, b2, c, d;
 
 	if (strncmp(http.buf, "HTTP/1.", 7) || strncmp(http.buf + 8, " 200", 4))
 		FAIL("HTTP status: %.12s", http.buf);
@@ -319,6 +467,33 @@ static void handle_response(void)
 		return;
 	}
 
+	if (http.stage == STAGE_SIGNAL || http.stage == STAGE_STATUS) {
+		if (xml_text(body, "code", code, sizeof(code)))
+			FAIL("Huawei API error %s", code);  /* keeps the sample */
+		if (http.stage == STAGE_SIGNAL) {
+			if (xml_int(body, "rsrp", &a) && xml_int(body, "rsrq", &b2) &&
+			    xml_int(body, "sinr", &c)) {
+				s->rsrp = a < -32767 ? -32767 : a > 32767 ? 32767 : (int16_t)a;
+				s->rsrq = clamp8(b2);
+				s->sinr = clamp8(c);
+				s->rssi = xml_int(body, "rssi", &d) ? clamp8(d) : SIG_NONE;
+				s->sig_n = 1;
+			}
+			if (xml_int(body, "cell_id", &l) && l > 0)
+				s->cell_id = (uint32_t)l;
+			http.stage = STAGE_STATUS;
+			http_start();
+			return;
+		}
+		if (xml_int(body, "ConnectionStatus", &l) && l > 0 && l < 65536)
+			s->conn_status = (uint16_t)l;
+		if (xml_int(body, "CurrentNetworkType", &l) && l >= 0 && l < NET_NONE)
+			s->net_type = (uint8_t)l;
+		signal_error[0] = '\0';
+		finish_sample();
+		return;
+	}
+
 	if (xml_text(body, "code", code, sizeof(code))) {
 		/* Typically 125002: our cached session expired. Retry once. */
 		cookie[0] = '\0';
@@ -330,24 +505,25 @@ static void handle_response(void)
 		FAIL("Huawei API error %s", code);
 	}
 
-	memset(&s, 0, sizeof(s));
+	memset(s, 0, sizeof(*s));
+	sample_clear_signal(s);
 	if (!xml_u64(body, "CurrentConnectTime", &v) ||
-	    !xml_u64(body, "CurrentDownload", &s.download) ||
-	    !xml_u64(body, "CurrentUpload", &s.upload))
+	    !xml_u64(body, "CurrentDownload", &s->download) ||
+	    !xml_u64(body, "CurrentUpload", &s->upload))
 		FAIL("counters missing in response");
-	s.uptime = v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
-	xml_u64(body, "TotalDownload", &s.total_download);
-	xml_u64(body, "TotalUpload", &s.total_upload);
-	s.time = (uint32_t)time(NULL);
+	s->uptime = v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
+	xml_u64(body, "TotalDownload", &s->total_download);
+	xml_u64(body, "TotalUpload", &s->total_upload);
+	s->time = (uint32_t)time(NULL);
 
-	http_close();
-	http.busy = false;
-	record_sample(&s);
-	last_success = s.time;
-	if (failures)
-		syslog(LOG_NOTICE, "sampling recovered after %u failures", failures);
-	failures = 0;
-	last_error[0] = '\0';
+	if (!cfg_signal) {
+		finish_sample();
+		return;
+	}
+	/* Counters are safe now; signal and status are best effort. */
+	http.have_pending = true;
+	http.stage = STAGE_SIGNAL;
+	http_start();
 }
 
 static void http_fd_cb(struct uloop_fd *fd, unsigned int events)
@@ -412,17 +588,20 @@ static void http_timeout_cb(struct uloop_timeout *t)
 
 static void http_start(void)
 {
-	const char *path = http.stage == STAGE_TOKEN ?
-		"/api/webserver/SesTokInfo" : "/api/monitoring/traffic-statistics";
+	static const char *const paths[] = {
+		[STAGE_TOKEN]  = "/api/webserver/SesTokInfo",
+		[STAGE_STATS]  = "/api/monitoring/traffic-statistics",
+		[STAGE_SIGNAL] = "/api/device/signal",
+		[STAGE_STATUS] = "/api/monitoring/status",
+	};
+	bool auth = http.stage != STAGE_TOKEN;
 	int n;
 
 	http_close();
 	n = snprintf(http.req, sizeof(http.req),
 		"GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s%s%s\r\n",
-		path, cfg_host,
-		http.stage == STAGE_STATS ? "Cookie: " : "",
-		http.stage == STAGE_STATS ? cookie : "",
-		http.stage == STAGE_STATS ? "\r\n" : "");
+		paths[http.stage], cfg_host,
+		auth ? "Cookie: " : "", auth ? cookie : "", auth ? "\r\n" : "");
 	if (n < 0 || (size_t)n >= sizeof(http.req))
 		FAIL("request too long");
 	http.req_len = n;
@@ -454,6 +633,7 @@ static void sample_timer_cb(struct uloop_timeout *t)
 		return;
 	}
 	http.busy = true;
+	http.have_pending = false;
 	http.stage = cookie[0] ? STAGE_STATS : STAGE_TOKEN;
 	http.cookie_was_cached = cookie[0] != '\0';
 	http_start();
@@ -475,6 +655,20 @@ static void add_sample(struct blob_buf *buf, const char *name, const struct samp
 	blobmsg_add_u64(buf, "upload", s->upload);
 	blobmsg_add_u64(buf, "total_download", s->total_download);
 	blobmsg_add_u64(buf, "total_upload", s->total_upload);
+	if (s->sig_n && s->rsrp != RSRP_NONE) {
+		blobmsg_add_u32(buf, "rsrp", (uint32_t)(int32_t)s->rsrp);
+		blobmsg_add_u32(buf, "rsrq", (uint32_t)(int32_t)s->rsrq);
+		blobmsg_add_u32(buf, "sinr", (uint32_t)(int32_t)s->sinr);
+		if (s->rssi != SIG_NONE)
+			blobmsg_add_u32(buf, "rssi", (uint32_t)(int32_t)s->rssi);
+		blobmsg_add_u32(buf, "signal_samples", s->sig_n);
+	}
+	if (s->cell_id)
+		blobmsg_add_u32(buf, "cell_id", s->cell_id);
+	if (s->conn_status)
+		blobmsg_add_u32(buf, "conn_status", s->conn_status);
+	if (s->net_type != NET_NONE)
+		blobmsg_add_u32(buf, "net_type", s->net_type);
 	blobmsg_close_table(buf, t);
 }
 
@@ -613,6 +807,9 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_u32(&b, "failures", failures);
 	if (last_error[0])
 		blobmsg_add_string(&b, "last_error", last_error);
+	blobmsg_add_u8(&b, "signal", cfg_signal);
+	if (cfg_signal && signal_error[0])
+		blobmsg_add_string(&b, "signal_error", signal_error);
 	return ubus_send_reply(ctx, req, b.head);
 }
 
@@ -673,6 +870,7 @@ static void usage(const char *prog)
 		"  -f file      fine history file: loaded at start, saved on exit\n"
 		"  -F file      coarse history file (default: <fine file>.coarse)\n"
 		"  -S seconds   also save the history files this often (default: exit only)\n"
+		"  -G           don't read signal quality and connection status\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
 }
@@ -683,7 +881,7 @@ int main(int argc, char **argv)
 
 	static char coarse_default[PATH_MAX];
 
-	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:h")) != -1) {
+	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:Gh")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'P': cfg_port = optarg; break;
@@ -695,6 +893,7 @@ int main(int argc, char **argv)
 		case 'F': coarse.state = optarg; break;
 		case 'S': cfg_save_every = parse_uint(optarg, "save interval", 60, 604800); break;
 		case 's': cfg_socket = optarg; break;
+		case 'G': cfg_signal = false; break;
 		default: usage(argv[0]);
 		}
 	}
