@@ -1,6 +1,6 @@
 # tinymdns: minimal mDNS / DNS-SD advertiser
 
-Makes the router reachable as **`http://openwrt.local/`**, and advertises its web pages as discoverable web services (DNS-SD `_http._tcp`), without remembering its IP address. It works with recent Windows, macOS, iOS, Android and Linux (Avahi or systemd-resolved).
+Makes the router reachable as **`http://openwrt.local/`**, and advertises its web interface as a discoverable web service (DNS-SD `_http._tcp`), without remembering its IP address. It works with recent Windows, macOS, iOS, Android and Linux (Avahi or systemd-resolved).
 
 | | |
 |---|---|
@@ -17,12 +17,12 @@ OpenWrt 15.05.1 has no small mDNS responder: Avahi's packages are about 138 KiB 
 - **The reverse name** of that address (`254.0.168.192.in-addr.arpa`) → `openwrt.local`.
 - **The configured services:**
   - the service-type list (`_services._dns-sd._udp.local` → `_http._tcp.local`);
-  - each instance (for example `LTE data usage._http._tcp.local`), with its SRV record (port and host) and TXT record (for example `path=/traffic.html`);
+  - each instance (for example `OpenWrt router._http._tcp.local`), with its SRV record (port and host) and TXT record (for example `path=/`);
   - answers that include the related records, so a client gets everything in one reply.
 
 ## Protocol behaviour (RFC 6762 / RFC 6763)
 
-- **Probing:** at startup, and whenever the address changes, it first asks three times, 250 ms apart, whether anyone else already uses its names. If another host does, it renames itself (`openwrt-2.local`, or `LTE data usage (2)`) and probes again. A host repeating our own identical records (an mDNS reflector, for example) isn't counted as a conflict.
+- **Probing:** at startup, and whenever the address changes, it first asks three times, 250 ms apart, whether anyone else already uses its names. If another host does, it renames itself (`openwrt-2.local`, or `OpenWrt router (2)`) and probes again. A host repeating our own identical records (an mDNS reflector, for example) isn't counted as a conflict.
 - **Announcing:** it sends all its records unprompted 3 times (at 0, 1 and 2 s). On stop it sends a **goodbye** (TTL 0), so other devices drop the records straight away.
 - **Answering:**
   - normal queries get a multicast answer, and the same record isn't multicast twice within a second;
@@ -49,17 +49,13 @@ config tinymdns 'main'
 	#option hostname 'openwrt'      # default: the system hostname, lowercased
 
 config service
-	option name 'LTE data usage'    # instance name: spaces allowed, no commas
+	option name 'OpenWrt router'    # instance name: spaces allowed, no commas
 	option type '_http._tcp'
 	option port '80'
-	list txt 'path=/traffic.html'   # key=value, no spaces
-
-config service
-	option name 'OpenWrt router'
-	option type '_http._tcp'
-	option port '80'
-	list txt 'path=/'
+	list txt 'path=/'               # key=value, no spaces
 ```
+
+The traffic dashboard (`/traffic.html`) was also advertised at first; it was removed from the default config at the user's request. Add a `config service` section like the one above to advertise another page.
 
 There can be up to 4 services. Apply changes with `/etc/init.d/tinymdns restart`. The service also restarts automatically when the system hostname changes.
 
@@ -110,7 +106,7 @@ rm /usr/sbin/tinymdns /etc/init.d/tinymdns /etc/config/tinymdns
   - renaming to `openwrt-2.local` after a simulated conflict;
   - 8,009 malformed packets with no crash and no sanitizer report.
 - **Address change:** a goodbye for the old address, 3 probes, then announcements of the new one.
-- **On the LAN after install:** it claimed `openwrt.local` (192.168.0.254) without a conflict.
+- **On the LAN after install** (with both web pages advertised at the time): it claimed `openwrt.local` (192.168.0.254) without a conflict.
   - **systemd-resolved** on the VM, an independent implementation, resolved `openwrt.local` and the "LTE data usage" service (`openwrt.local:80`, `path=/traffic.html`) over multicast.
   - **HTTP:** `http://openwrt.local/traffic.html` returned 200.
   - **`dig` via the multicast group** reported a timeout. A capture showed the router's correct direct reply: `dig` ignores it because it comes from 192.168.0.254, not 224.0.0.251.

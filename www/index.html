@@ -34,6 +34,7 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <a class="card" href="/cgi-bin/luci">
       <h2>Router admin</h2>
       <p>LuCI: network, Wi-Fi, firewall and system settings. Requires login.</p>
+      <div class="live" id="liveSys"></div>
     </a>
     <a class="card" href="/traffic.html">
       <h2>LTE data usage</h2>
@@ -42,7 +43,7 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     </a>
     <a class="card" href="/devices.html">
       <h2>Devices on the network</h2>
-      <p>Everything seen on the LAN: names, makers, when each was first and last seen. New devices are highlighted.</p>
+      <p>Every device seen on the LAN, with new ones highlighted.</p>
       <div class="live" id="liveDev"></div>
     </a>
   </nav>
@@ -63,6 +64,17 @@ document.getElementById("host").textContent = location.host;
     const d = Math.floor(s.uptime / 86400), h = Math.floor(s.uptime % 86400 / 3600);
     document.getElementById("live").textContent =
       `This session: ${gb(s.download)} down · ${gb(s.upload)} up · connected ${d ? d + "d " : ""}${h}h`;
+  } catch (e) { /* summary is optional */ }
+})();
+// Uptime, memory and flash from /cgi-bin/routerinfo; stays empty if unavailable.
+(async () => {
+  try {
+    const s = await (await fetch("/cgi-bin/routerinfo", {cache: "no-store"})).json();
+    const d = Math.floor(s.uptime / 86400), h = Math.floor(s.uptime % 86400 / 3600), m = Math.floor(s.uptime % 3600 / 60);
+    const up = d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+    const mb = (s.mem_available_kb / 1024).toLocaleString(undefined, {maximumFractionDigits: 1});
+    document.getElementById("liveSys").textContent =
+      `Up ${up} · ${mb} MB memory free · ${s.flash_free_kb} KB flash free`;
   } catch (e) { /* summary is optional */ }
 })();
 (async () => {

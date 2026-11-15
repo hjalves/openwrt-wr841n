@@ -1,0 +1,10 @@
+#!/bin/sh
+# Read-only router status for the landing page: uptime, memory, flash free.
+# Takes no input (query strings are ignored), so there is nothing to inject.
+read up _ < /proc/uptime
+mem_total=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+mem_avail=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+set -- $(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $2, $4 }')
+printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+printf '{"uptime":%d,"mem_total_kb":%d,"mem_available_kb":%d,"flash_total_kb":%d,"flash_free_kb":%d}\n' \
+	"${up%.*}" "${mem_total:-0}" "${mem_avail:-0}" "${1:-0}" "${2:-0}"
