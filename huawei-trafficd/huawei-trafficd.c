@@ -25,7 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <dirent.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -93,6 +96,8 @@ static const char *cfg_port = "80";
 static const char *cfg_socket;     /* ubus socket, NULL = default */
 static bool cfg_signal = true;     /* also read device/signal + monitoring/status */
 static unsigned cfg_save_every;    /* seconds, 0 = only on exit */
+static const char *cfg_flash_dir;  /* hourly history log on flash; NULL = off */
+static unsigned cfg_flash_every = 86400;
 
 /*
  * Two history tiers, each a ring buffer (oldest samples dropped first):
@@ -145,6 +150,7 @@ static long div_round(long sum, unsigned n)  /* nearest, halves away from 0 */
 static void coarse_finalize(struct sample *c, uint32_t end)
 {
 	long rsrp = 0, rsrq = 0, sinr = 0, rssi = 0;
+	uint8_t net = c->net_type;  /* the type at the start of the period */
 	unsigned n = 0, i;
 
 	for (i = fine.count; i-- > 0;) {
@@ -156,8 +162,8 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 			continue;
 		if (f->conn_status && f->conn_status != CONNECTED)
 			c->conn_status = f->conn_status;
-		if (f->net_type != NET_NONE && f->net_type != c->net_type)
-			c->net_type = f->net_type;
+		if (f->net_type != NET_NONE && f->net_type != net)
+			c->net_type = f->net_type;  /* any other type seen sticks */
 		if (!f->sig_n || f->rsrp == RSRP_NONE)
 			continue;
 		rsrp += f->rsrp;
@@ -283,6 +289,480 @@ static void ring_load(struct ring *r)
 	fclose(f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Hourly history on flash (optional): compressed, append-only        */
+/* ------------------------------------------------------------------ */
+/*
+ * Finished coarse samples are appended to one file per month (UTC),
+ * <dir>/YYYY-MM.log, once every flash_every seconds and on clean stop.
+ * Whole old months are deleted, so files are never rewritten.
+ *
+ * Each append is one block: 12-byte header + delta-encoded records.
+ *   "HB", version 1, record count, payload length (u16 LE), 0 (u16),
+ *   CRC-32 of the payload (u32 LE)
+ * The first record of a block is encoded against an all-zero sample, so
+ * every block decodes on its own and a torn write loses only that block.
+ * Record: flags, then varints: time delta, uptime drift (uptime delta minus
+ * time delta), session download/upload deltas, total-minus-session offset
+ * deltas; [signal: rsrp+140, rsrq+40, sinr+40, rssi+140, readings];
+ * [meta: cell, status, network type]. About 18 bytes per hourly record.
+ */
+#define FLASH_MONTHS     13           /* keep this many monthly files */
+#define FLASH_MIN_FREE   (64 * 1024)  /* never fill the overlay past this */
+#define BLOCK_HDR        12
+#define BLOCK_MAX        255          /* records per block */
+#define REC_MAX          64           /* worst-case encoded record size */
+#define F_SIG            1
+#define F_META           2
+#define TMPFS_MAGIC_     0x01021994
+#define RAMFS_MAGIC_     0x858458f6
+
+static uint32_t flushed_until;        /* newest coarse sample time on flash */
+static uint32_t flash_last_write;
+static char flash_error[96];
+
+static uint32_t crc32_buf(const uint8_t *p, size_t n)
+{
+	uint32_t c = 0xffffffffu;
+	int k;
+
+	while (n--) {
+		c ^= *p++;
+		for (k = 0; k < 8; k++)
+			c = (c >> 1) ^ (0xedb88320u & -(c & 1));
+	}
+	return ~c;
+}
+
+static size_t put_uv(uint8_t *p, uint64_t v)
+{
+	size_t n = 0;
+
+	do {
+		uint8_t b = v & 0x7f;
+
+		v >>= 7;
+		p[n++] = b | (v ? 0x80 : 0);
+	} while (v);
+	return n;
+}
+
+static size_t put_sv(uint8_t *p, int64_t v)
+{
+	return put_uv(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
+}
+
+static bool get_uv(const uint8_t **p, const uint8_t *end, uint64_t *v)
+{
+	uint64_t r = 0;
+	int sh;
+
+	for (sh = 0; *p < end && sh < 64; sh += 7) {
+		uint8_t b = *(*p)++;
+
+		r |= (uint64_t)(b & 0x7f) << sh;
+		if (!(b & 0x80)) {
+			*v = r;
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool get_sv(const uint8_t **p, const uint8_t *end, int64_t *v)
+{
+	uint64_t u;
+
+	if (!get_uv(p, end, &u))
+		return false;
+	*v = (int64_t)(u >> 1) ^ -(int64_t)(u & 1);
+	return true;
+}
+
+static uint8_t bias8(int v, int bias)  /* small signed value -> 0..255 */
+{
+	v += bias;
+	return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+}
+
+static void zero_sample(struct sample *z)
+{
+	memset(z, 0, sizeof(*z));
+	sample_clear_signal(z);
+}
+
+static int64_t offset(uint64_t total, uint64_t session)
+{
+	return (int64_t)(total - session);
+}
+
+static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample *b)
+{
+	bool sig = b->sig_n && b->rsrp != RSRP_NONE;
+	bool meta = a->cell_id != b->cell_id || a->conn_status != b->conn_status ||
+	            a->net_type != b->net_type;
+	int64_t dt = (int64_t)b->time - a->time;
+	size_t n = 0;
+
+	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0);
+	n += put_sv(p + n, dt);
+	n += put_sv(p + n, (int64_t)b->uptime - a->uptime - dt);
+	n += put_sv(p + n, (int64_t)(b->download - a->download));
+	n += put_sv(p + n, (int64_t)(b->upload - a->upload));
+	n += put_sv(p + n, offset(b->total_download, b->download) - offset(a->total_download, a->download));
+	n += put_sv(p + n, offset(b->total_upload, b->upload) - offset(a->total_upload, a->upload));
+	if (sig) {
+		p[n++] = bias8(b->rsrp, 140);
+		p[n++] = bias8(b->rsrq, 40);
+		p[n++] = bias8(b->sinr, 40);
+		p[n++] = b->rssi == SIG_NONE ? 0 : bias8(b->rssi, 140);
+		p[n++] = b->sig_n;
+	}
+	if (meta) {
+		n += put_uv(p + n, b->cell_id);
+		n += put_uv(p + n, b->conn_status);
+		p[n++] = b->net_type;
+	}
+	return n;
+}
+
+static bool rec_decode(const uint8_t **p, const uint8_t *end,
+                       const struct sample *a, struct sample *b)
+{
+	int64_t dt, du, dd, dup, od, ou;
+	uint64_t cell, conn;
+	uint8_t f;
+
+	if (*p >= end)
+		return false;
+	f = *(*p)++;
+	if (!get_sv(p, end, &dt) || !get_sv(p, end, &du) || !get_sv(p, end, &dd) ||
+	    !get_sv(p, end, &dup) || !get_sv(p, end, &od) || !get_sv(p, end, &ou))
+		return false;
+	*b = *a;
+	b->time = (uint32_t)((int64_t)a->time + dt);
+	b->uptime = (uint32_t)((int64_t)a->uptime + dt + du);
+	b->download = a->download + (uint64_t)dd;
+	b->upload = a->upload + (uint64_t)dup;
+	b->total_download = b->download + (uint64_t)(offset(a->total_download, a->download) + od);
+	b->total_upload = b->upload + (uint64_t)(offset(a->total_upload, a->upload) + ou);
+	b->rsrp = RSRP_NONE;
+	b->rsrq = b->sinr = b->rssi = SIG_NONE;
+	b->sig_n = 0;
+	if (f & F_SIG) {
+		if (end - *p < 5)
+			return false;
+		b->rsrp = (int16_t)((*p)[0] - 140);
+		b->rsrq = (int8_t)((*p)[1] - 40);
+		b->sinr = (int8_t)((*p)[2] - 40);
+		b->rssi = (*p)[3] ? (int8_t)((*p)[3] - 140) : SIG_NONE;
+		b->sig_n = (*p)[4];
+		*p += 5;
+	}
+	if (f & F_META) {
+		if (!get_uv(p, end, &cell) || !get_uv(p, end, &conn) || *p >= end)
+			return false;
+		b->cell_id = (uint32_t)cell;
+		b->conn_status = (uint16_t)conn;
+		b->net_type = *(*p)++;
+	}
+	return true;
+}
+
+static unsigned month_of(uint32_t t)  /* year * 12 + month, UTC */
+{
+	time_t tt = t;
+	struct tm tm;
+
+	gmtime_r(&tt, &tm);
+	return (unsigned)(tm.tm_year + 1900) * 12 + (unsigned)tm.tm_mon;
+}
+
+static bool month_file(char *buf, size_t size, unsigned month)
+{
+	return snprintf(buf, size, "%s/%04u-%02u.log", cfg_flash_dir, month / 12, month % 12 + 1) < (int)size;
+}
+
+/* Parse "YYYY-MM.log"; returns 0 if the name doesn't match. */
+static unsigned month_from_name(const char *name)
+{
+	unsigned y, m;
+	char tail[8];
+
+	if (sscanf(name, "%4u-%2u%7s", &y, &m, tail) != 3 || strcmp(tail, ".log") ||
+	    strlen(name) != 11 || y < 2000 || m < 1 || m > 12)
+		return 0;
+	return y * 12 + m - 1;
+}
+
+/* Months present on flash, sorted ascending. Returns count. */
+static unsigned flash_months(unsigned *out, unsigned max)
+{
+	DIR *d = opendir(cfg_flash_dir);
+	struct dirent *e;
+	unsigned n = 0, i, j, m;
+
+	if (!d)
+		return 0;
+	while ((e = readdir(d)) && n < max)
+		if ((m = month_from_name(e->d_name)))
+			out[n++] = m;
+	closedir(d);
+	for (i = 1; i < n; i++)  /* insertion sort: a handful of entries */
+		for (j = i; j > 0 && out[j - 1] > out[j]; j--) {
+			m = out[j];
+			out[j] = out[j - 1];
+			out[j - 1] = m;
+		}
+	return n;
+}
+
+/*
+ * Read one month's blocks, calling fn for each record. A damaged or torn
+ * block ends the file: the file is cut back to the last good block so later
+ * appends stay readable.
+ */
+static void flash_read_month(unsigned month, void (*fn)(const struct sample *))
+{
+	char path[PATH_MAX];
+	uint8_t hdr[BLOCK_HDR], *buf = NULL;
+	long good = 0;
+	FILE *f;
+
+	if (!month_file(path, sizeof(path), month) || !(f = fopen(path, "rb")))
+		return;
+	for (;;) {
+		struct sample prev, cur;
+		const uint8_t *p, *end;
+		unsigned len, count, i;
+
+		if (fread(hdr, 1, BLOCK_HDR, f) != BLOCK_HDR)
+			break;
+		len = hdr[4] | hdr[5] << 8;
+		count = hdr[3];
+		if (hdr[0] != 'H' || hdr[1] != 'B' || hdr[2] != 1 || !count)
+			break;
+		free(buf);
+		if (!(buf = malloc(len ? len : 1)) || fread(buf, 1, len, f) != len)
+			break;  /* torn tail */
+		if (crc32_buf(buf, len) != ((uint32_t)hdr[8] | (uint32_t)hdr[9] << 8 |
+		                           (uint32_t)hdr[10] << 16 | (uint32_t)hdr[11] << 24)) {
+			/* Damaged inside, but its length is intact: skip just this block. */
+			syslog(LOG_WARNING, "%s: skipping a damaged block at byte %ld", path, good);
+			good = ftell(f);
+			continue;
+		}
+		zero_sample(&prev);
+		p = buf;
+		end = buf + len;
+		for (i = 0; i < count && rec_decode(&p, end, &prev, &cur); i++) {
+			fn(&cur);
+			prev = cur;
+		}
+		if (i < count)
+			break;
+		good = ftell(f);
+	}
+	free(buf);
+	if (!feof(f) || ftell(f) != good) {
+		fseek(f, 0, SEEK_END);
+		if (ftell(f) != good) {
+			syslog(LOG_WARNING, "%s: damaged data after byte %ld, truncating", path, good);
+			if (truncate(path, good) != 0)
+				syslog(LOG_WARNING, "truncate %s: %s", path, strerror(errno));
+		}
+	}
+	fclose(f);
+}
+
+/* Refuse RAM-backed directories, which would silently not persist. */
+static bool flash_dir_ok(void)
+{
+	char parent[PATH_MAX], *slash;
+	struct statfs sf;
+
+	snprintf(parent, sizeof(parent), "%s", cfg_flash_dir);
+	if ((slash = strrchr(parent, '/')) && slash != parent) {
+		*slash = '\0';
+		mkdir(parent, 0755);  /* e.g. /srv */
+	}
+	if (mkdir(cfg_flash_dir, 0755) != 0 && errno != EEXIST) {
+		snprintf(flash_error, sizeof(flash_error), "mkdir: %s", strerror(errno));
+		return false;
+	}
+	if (statfs(cfg_flash_dir, &sf) == 0 &&
+	    ((unsigned long)sf.f_type == TMPFS_MAGIC_ || (unsigned long)sf.f_type == RAMFS_MAGIC_)) {
+		snprintf(flash_error, sizeof(flash_error), "%s is in RAM, not flash; disabled", cfg_flash_dir);
+		return false;
+	}
+	return true;
+}
+
+static void flash_prune(unsigned newest)
+{
+	unsigned months[64], n = flash_months(months, 64), i;
+	char path[PATH_MAX];
+
+	for (i = 0; i < n; i++)
+		if (months[i] + FLASH_MONTHS <= newest && month_file(path, sizeof(path), months[i])) {
+			if (unlink(path) == 0)
+				syslog(LOG_INFO, "removed old history %s", path);
+		}
+}
+
+static bool flash_append(unsigned month, const uint8_t *payload, size_t len, unsigned count)
+{
+	char path[PATH_MAX];
+	uint8_t hdr[BLOCK_HDR];
+	uint32_t crc = crc32_buf(payload, len);
+	uint8_t *buf;
+	ssize_t w;
+	int fd;
+
+	hdr[0] = 'H'; hdr[1] = 'B'; hdr[2] = 1; hdr[3] = (uint8_t)count;
+	hdr[4] = len & 0xff; hdr[5] = len >> 8; hdr[6] = hdr[7] = 0;
+	hdr[8] = crc & 0xff; hdr[9] = crc >> 8 & 0xff; hdr[10] = crc >> 16 & 0xff; hdr[11] = crc >> 24;
+	if (!month_file(path, sizeof(path), month))
+		return false;
+	/* One write() per block: JFFS2 then stores it as one atomic node. */
+	if (!(buf = malloc(BLOCK_HDR + len)))
+		return false;
+	memcpy(buf, hdr, BLOCK_HDR);
+	memcpy(buf + BLOCK_HDR, payload, len);
+	fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+	if (fd < 0) {
+		snprintf(flash_error, sizeof(flash_error), "open %.60s: %s", path, strerror(errno));
+		free(buf);
+		return false;
+	}
+	w = write(fd, buf, BLOCK_HDR + len);
+	free(buf);
+	if (w != (ssize_t)(BLOCK_HDR + len) || fsync(fd) != 0) {
+		snprintf(flash_error, sizeof(flash_error), "write %.60s: %s", path, strerror(errno));
+		close(fd);
+		return false;
+	}
+	close(fd);
+	return true;
+}
+
+/* Append finished coarse samples (all but the newest, still-open one). */
+static void flash_flush(void)
+{
+	static uint8_t payload[BLOCK_MAX * REC_MAX];
+	struct statvfs sv;
+	struct sample prev;
+	unsigned i, first, count = 0, month = 0, newest = 0;
+	size_t len = 0;
+
+	if (!cfg_flash_dir || !coarse.interval || coarse.count < 2)
+		return;
+	for (first = coarse.count - 1; first > 0 && ring_at(&coarse, first - 1)->time > flushed_until; first--)
+		;
+	if (first >= coarse.count - 1)
+		return;  /* nothing new */
+	if (statvfs(cfg_flash_dir, &sv) == 0 &&
+	    (uint64_t)sv.f_bavail * sv.f_bsize < FLASH_MIN_FREE) {
+		snprintf(flash_error, sizeof(flash_error), "less than %u KiB free on flash; not writing",
+		         FLASH_MIN_FREE / 1024);
+		syslog(LOG_WARNING, "%s", flash_error);
+		return;
+	}
+	for (i = first; i < coarse.count - 1; i++) {
+		const struct sample *s = ring_at(&coarse, i);
+		unsigned m = month_of(s->time);
+
+		if (s->time < MIN_VALID_TIME)
+			continue;
+		if (count && (m != month || count == BLOCK_MAX)) {
+			if (!flash_append(month, payload, len, count))
+				return;
+			count = 0;
+			len = 0;
+		}
+		if (!count)
+			zero_sample(&prev);
+		month = m;
+		len += rec_encode(payload + len, &prev, s);
+		prev = *s;
+		count++;
+		flushed_until = s->time;
+		newest = m;
+	}
+	if (count && !flash_append(month, payload, len, count))
+		return;
+	flash_last_write = (uint32_t)time(NULL);
+	flash_error[0] = '\0';
+	if (newest)
+		flash_prune(newest);
+}
+
+static struct uloop_timeout flash_timer;
+
+static void flash_timer_cb(struct uloop_timeout *t)
+{
+	flash_flush();
+	uloop_timeout_set(t, cfg_flash_every * 1000);
+}
+
+static struct sample *load_buf;
+static unsigned load_n, load_cap;
+
+static void collect_record(const struct sample *s)
+{
+	if (load_n == load_cap) {
+		unsigned cap = load_cap ? load_cap * 2 : 1024;
+		struct sample *nb = realloc(load_buf, cap * sizeof(*nb));
+
+		if (!nb)
+			return;
+		load_buf = nb;
+		load_cap = cap;
+	}
+	load_buf[load_n++] = *s;
+}
+
+/*
+ * History on flash is older than (or the same as) what /tmp holds after a
+ * service restart, so: flash records older than the oldest /tmp coarse
+ * sample first, then the /tmp ones. After a reboot /tmp is empty and the
+ * flash records are the whole hourly history.
+ */
+static void flash_load(void)
+{
+	unsigned months[64], n, i;
+	uint32_t tmp_oldest = coarse.count ? ring_at(&coarse, 0)->time : UINT32_MAX;
+	struct sample *tmp = NULL;
+	unsigned tmp_n = coarse.count, loaded = 0;
+
+	n = flash_months(months, 64);
+	load_n = 0;
+	for (i = 0; i < n; i++)
+		flash_read_month(months[i], collect_record);
+	if (load_n)
+		flushed_until = load_buf[load_n - 1].time;
+	if (tmp_n) {
+		if (!(tmp = malloc(tmp_n * sizeof(*tmp))))
+			goto out;
+		for (i = 0; i < tmp_n; i++)
+			tmp[i] = *ring_at(&coarse, i);
+	}
+	coarse.head = coarse.count = 0;
+	for (i = 0; i < load_n; i++)
+		if (load_buf[i].time < tmp_oldest) {
+			ring_push(&coarse, &load_buf[i]);
+			loaded++;
+		}
+	for (i = 0; i < tmp_n; i++)
+		ring_push(&coarse, &tmp[i]);
+	syslog(LOG_INFO, "loaded %u hourly samples from %s (%u files)", loaded, cfg_flash_dir, n);
+out:
+	free(tmp);
+	free(load_buf);
+	load_buf = NULL;
+	load_n = load_cap = 0;
+}
+
 static void state_load(void)
 {
 	unsigned i;
@@ -291,6 +771,8 @@ static void state_load(void)
 	if (!coarse.interval)
 		return;
 	ring_load(&coarse);
+	if (cfg_flash_dir)
+		flash_load();
 	/* No coarse history yet (first run, or a v1 file): derive it. */
 	if (!coarse.count)
 		for (i = 0; i < fine.count; i++)
@@ -808,6 +1290,29 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	if (last_error[0])
 		blobmsg_add_string(&b, "last_error", last_error);
 	blobmsg_add_u8(&b, "signal", cfg_signal);
+	if (cfg_flash_dir || flash_error[0]) {
+		void *t = blobmsg_open_table(&b, "flash");
+		unsigned months[64], n = cfg_flash_dir ? flash_months(months, 64) : 0, i;
+		uint64_t bytes = 0;
+		char path[PATH_MAX];
+		struct stat st;
+
+		for (i = 0; i < n; i++)
+			if (month_file(path, sizeof(path), months[i]) && stat(path, &st) == 0)
+				bytes += (uint64_t)st.st_size;
+		blobmsg_add_u8(&b, "enabled", cfg_flash_dir != NULL);
+		if (cfg_flash_dir) {
+			blobmsg_add_string(&b, "dir", cfg_flash_dir);
+			blobmsg_add_u32(&b, "every", cfg_flash_every);
+			blobmsg_add_u32(&b, "files", n);
+			blobmsg_add_u64(&b, "bytes", bytes);
+			blobmsg_add_u32(&b, "saved_until", flushed_until);
+			blobmsg_add_u32(&b, "last_write", flash_last_write);
+		}
+		if (flash_error[0])
+			blobmsg_add_string(&b, "error", flash_error);
+		blobmsg_close_table(&b, t);
+	}
 	if (cfg_signal && signal_error[0])
 		blobmsg_add_string(&b, "signal_error", signal_error);
 	return ubus_send_reply(ctx, req, b.head);
@@ -870,6 +1375,8 @@ static void usage(const char *prog)
 		"  -f file      fine history file: loaded at start, saved on exit\n"
 		"  -F file      coarse history file (default: <fine file>.coarse)\n"
 		"  -S seconds   also save the history files this often (default: exit only)\n"
+		"  -D dir       keep the hourly history on flash in dir (compressed, monthly files)\n"
+		"  -E seconds   append to the flash history this often (default 86400)\n"
 		"  -G           don't read signal quality and connection status\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
@@ -881,7 +1388,7 @@ int main(int argc, char **argv)
 
 	static char coarse_default[PATH_MAX];
 
-	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:Gh")) != -1) {
+	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:h")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'P': cfg_port = optarg; break;
@@ -894,6 +1401,8 @@ int main(int argc, char **argv)
 		case 'S': cfg_save_every = parse_uint(optarg, "save interval", 60, 604800); break;
 		case 's': cfg_socket = optarg; break;
 		case 'G': cfg_signal = false; break;
+		case 'D': cfg_flash_dir = *optarg ? optarg : NULL; break;
+		case 'E': cfg_flash_every = parse_uint(optarg, "flash interval", 300, 30 * 86400); break;
 		default: usage(argv[0]);
 		}
 	}
@@ -917,6 +1426,12 @@ int main(int argc, char **argv)
 	}
 	signal(SIGPIPE, SIG_IGN);
 	http.fd.fd = -1;
+	if (cfg_flash_dir && (!coarse.interval || !flash_dir_ok())) {
+		if (!coarse.interval)
+			snprintf(flash_error, sizeof(flash_error), "needs the coarse tier; disabled");
+		syslog(LOG_WARNING, "flash history: %s", flash_error);
+		cfg_flash_dir = NULL;
+	}
 	state_load();
 
 	uloop_init();
@@ -926,6 +1441,10 @@ int main(int argc, char **argv)
 
 	sample_timer.cb = sample_timer_cb;
 	uloop_timeout_set(&sample_timer, 1000);
+	if (cfg_flash_dir) {
+		flash_timer.cb = flash_timer_cb;
+		uloop_timeout_set(&flash_timer, cfg_flash_every * 1000);
+	}
 	if ((fine.state || coarse.state) && cfg_save_every) {
 		save_timer.cb = save_timer_cb;
 		uloop_timeout_set(&save_timer, cfg_save_every * 1000);
@@ -937,6 +1456,7 @@ int main(int argc, char **argv)
 	uloop_run();  /* until SIGTERM/SIGINT */
 
 	http_close();
+	flash_flush();
 	state_save();
 	if (ubus_ever_connected)  /* the context is only valid once connected */
 		ubus_shutdown(&conn.ctx);

@@ -7,7 +7,7 @@ Huawei 192.168.0.1 ──HTTP (anonymous)──▶ huawei-trafficd ──ubus─
                                           (RAM ring buffers)     └──▶ ubus call (on router)
 ```
 
-- **Size:** a 20 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
+- **Size:** a 29 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
 - **Memory:** about 810 KiB RSS measured on the router with a small history (much of it shared library pages). Each sample takes 56 bytes, so the full default history adds about 715 KiB: 236 KiB for the 3-day tier plus 479 KiB for the 1-year tier. That RAM is only used as the history fills.
 - **No credentials:** the Huawei API returns these counters to an anonymous session. The daemon fetches a session cookie from `/api/webserver/SesTokInfo`, then reads `/api/monitoring/traffic-statistics`, `/api/device/signal` and `/api/monitoring/status` (the last two can be turned off with `signal 0`). It reuses the cookie and gets a new one only when the Huawei rejects it. If only the signal or status request fails, the traffic sample is still kept.
 - **Non-blocking:** HTTP collection runs in the same `uloop` as ubus, with a 5 s timeout, so queries are answered even when the Huawei is unreachable.
@@ -147,6 +147,8 @@ Long ranges read the hourly tier when it reaches back far enough, in pages of 10
 | `state_file` | `/tmp/huawei-trafficd.dat` | Fine history, loaded at start and written on stop. `/tmp` survives a service restart but **not a reboot**. |
 | `coarse_state_file` | `<state_file>.coarse` | Coarse history file |
 | `save_every` | `0` | Also write the history files every N seconds (minimum 60) |
+| `flash_dir` | `/srv/huawei-trafficd` | Keep the hourly history on flash as well, so it survives reboots and power cuts (see below). Empty turns it off. |
+| `flash_every` | `86400` | Seconds between appends to the flash history (300 to 30 days) |
 
 Apply changes with `/etc/init.d/huawei-trafficd restart`.
 
@@ -154,11 +156,28 @@ State files from earlier versions still load. A one-tier file becomes the fine t
 
 ### Keeping history across reboots
 
-Both files are in `/tmp` by default, which is RAM, so **a reboot loses the history**. Saving to flash is limited by this router's small JFFS2 overlay (about 280–300 KiB free):
+The `/tmp` files are RAM, so a reboot or power cut loses them. To keep the **hourly history** anyway, the daemon also appends it to flash in `flash_dir` (on by default):
 
-- A full year of coarse history is 479 KiB, which doesn't fit even with JFFS2 compression. But the save writes a new file before replacing the old one, so it briefly needs room for two copies. **Don't point a full-year coarse tier at flash.**
-- What fits safely: put `coarse_state_file` on flash with a shorter `coarse_history`, for example `1440` (60 days, 79 KiB), and set `save_every` to `3600`. JFFS2 spreads writes across the flash, so an hourly save is a modest amount of wear.
-- For a full year that survives reboots, copy the history off the router regularly (for example a scheduled `query.py --tier coarse --format csv` on another machine).
+- **What's written:** only finished hourly samples (the still-open hour stays in RAM), compressed to about 18 bytes each. Each sample stores only the differences from the previous one, as variable-length numbers. One file per month (UTC): `YYYY-MM.log`.
+- **When:** every `flash_every` seconds (default once a day) and on a clean stop of the service. A power cut loses at most that interval of hourly data, plus the per-minute tier and the open hour, which live only in RAM.
+- **How much:** about 13 KiB a month. The **13 newest monthly files** are kept, about 160 KiB in total; older months are deleted as whole files, so nothing is ever rewritten. If the overlay has less than 64 KiB free, the daemon stops writing and reports it in `status` instead of filling the flash.
+- **Wear:** each append is one small write of about 0.5 KB a day, and JFFS2 spreads erases over the 9 blocks of the 576 KiB overlay. Including JFFS2's own copying, that's at most about 2 erases per block per year, against roughly 100,000 rated cycles for this NOR flash (MX25L3205D).
+- **Robustness:** each append is one block with a CRC-32. At startup, a block damaged inside is skipped, and a torn or garbled end of a file (for example from a power cut mid-write) is cut off so later appends stay readable.
+- **Startup:** hourly samples are rebuilt from these files, plus anything newer from `/tmp` after a plain service restart.
+- **Must be on flash:** a directory in RAM (`/tmp`, `/var`) is refused with a warning, because it would silently not persist.
+- **`status`** has a `flash` section: directory, interval, number of files, bytes, last saved sample and any error.
+
+**Format** (little-endian), for reading the files elsewhere:
+- **Block:** a 12-byte header (`"HB"`, version `1`, record count, payload length as u16, 2 zero bytes, CRC-32 of the payload as u32), then the records. The first record of each block is encoded against an all-zero sample, so every block decodes on its own.
+- **Record:**
+  - a flags byte;
+  - zigzag varints for: time delta, uptime drift (uptime delta minus time delta), session download and upload deltas, and deltas of total-minus-session for download and upload;
+  - if flag 1 (signal): bytes `rsrp+140`, `rsrq+40`, `sinr+40`, `rssi+140` (0 = unknown), then the reading count;
+  - if flag 2 (cell, status or network type changed): varints for the cell ID and the status, then a byte for the network type.
+
+**Turning it off:** set `option flash_dir ''`, run `/etc/init.d/huawei-trafficd restart`, then `rm -r /srv/huawei-trafficd` to free the space.
+
+**Firmware upgrades:** a sysupgrade that keeps settings doesn't keep `/srv`. If you want the history kept, add `/srv/huawei-trafficd/` to `/etc/sysupgrade.conf` first.
 
 Daemon options: `huawei-trafficd -h`. It logs to syslog (`logread | grep huawei-trafficd`), only when sampling starts failing and when it recovers.
 
@@ -212,6 +231,7 @@ Restarting rpcd logs out existing LuCI and ubus sessions. procd restarts the dae
 /etc/init.d/huawei-trafficd stop; /etc/init.d/huawei-trafficd disable
 rm /usr/sbin/huawei-trafficd /etc/init.d/huawei-trafficd /etc/config/huawei-trafficd \
    /usr/share/rpcd/acl.d/huawei-trafficd.json /www/traffic.html /tmp/huawei-trafficd.dat*
+rm -r /srv/huawei-trafficd   # hourly history on flash
 /etc/init.d/rpcd restart
 ```
 
@@ -227,6 +247,13 @@ rm /usr/sbin/huawei-trafficd /etc/init.d/huawei-trafficd /etc/config/huawei-traf
   - **Also checked:** hourly averaging (6 readings of −100/−110 dBm averaged to −107), status, network-type and cell changes, uptime resets, loading old-format files, and `-G` sending only the two traffic requests.
   - **Dashboard:** rendered against a year of mock data with a reboot, a disconnect, a 3G spell, cell changes and a gap, in light, dark and phone layouts.
   - **On the router:** the upgrade loaded the existing 225 + 4 samples. The connection log shows the three real Huawei reboots of 15:34–15:41.
+- **Flash history:** tested with a native build against the mock Huawei, using a 12-second "hour":
+  - **Restores:** after a clean stop and a simulated reboot (`/tmp` files deleted), every finished hourly sample came back identical in all fields. A plain service restart gave no duplicates.
+  - **Damage:** a torn last block is cut off, a block with a flipped byte is skipped (the blocks before and after it still load), and garbage at the end is trimmed.
+  - **Pruning:** months older than the newest 13 are deleted, and other files are left alone.
+  - **Safety:** a directory in RAM is refused.
+  - **Size:** about 20 bytes per record in a 14-record block.
+  - **On the router:** the first file written on the router was decoded independently in Python and matched the daemon's hourly samples exactly. The test also found a bug: a network type seen briefly within an hour (for example 3G) wasn't kept in the hourly sample. It's fixed.
 - Installed on the router as above (overlay use went from 284 to 292 KiB). The service is enabled at boot and running. `ubus call` and anonymous HTTP `latest`/`query` work, while anonymous `system.info` is still `Access denied`. History survived `/etc/init.d/huawei-trafficd restart`.
 
 ## Security notes
