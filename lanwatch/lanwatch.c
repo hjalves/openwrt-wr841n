@@ -45,6 +45,7 @@
 #include <libubus.h>
 #include <libubox/blobmsg.h>
 #include <libubox/uloop.h>
+#include <libubox/usock.h>
 
 #define MAX_DEV        256
 #define NAME_LEN       48
@@ -61,12 +62,19 @@ enum { V_ARP = 1, V_DHCP = 2, V_MDNS = 4, V_SSDP = 8, V_NBNS = 16, V_WIFI = 32, 
 static const char *const via_names[] = { "arp", "dhcp", "mdns", "ssdp", "netbios", "wifi", "self" };
 
 /* Name sources, in increasing priority. */
-enum { N_NONE, N_MDNS_ID, N_NBNS, N_MDNS_REV, N_MDNS, N_CAST, N_DHCP, N_SELF };
-static const char *const name_src_names[] = { "", "mdns-id", "netbios", "mdns-reverse", "mdns", "cast", "dhcp", "self" };
+/* Values are stored in the state file, so new sources are appended; their
+ * ranking is in name_prio[] / info_prio[]. */
+enum { N_NONE, N_MDNS_ID, N_NBNS, N_MDNS_REV, N_MDNS, N_CAST, N_DHCP, N_SELF, N_UPNP };
+static const char *const name_src_names[] = { "", "mdns-id", "netbios", "mdns-reverse", "mdns", "cast", "dhcp", "self", "upnp" };
+static const uint8_t name_prio[] = { 0, 1, 2, 3, 4, 6, 7, 8, 5 };  /* UPnP: above mDNS, below Cast */
 
 /* Info sources, in increasing priority. */
-enum { I_NONE, I_GATEWAY, I_DHCP, I_SSDP, I_MODEL, I_SELF };
-static const char *const info_src_names[] = { "", "route", "dhcp-vendor", "ssdp", "mdns-model", "self" };
+enum { I_NONE, I_GATEWAY, I_DHCP, I_SSDP, I_MODEL, I_SELF, I_UPNP };
+static const char *const info_src_names[] = { "", "route", "dhcp-vendor", "ssdp", "mdns-model", "self", "upnp-model" };
+static const uint8_t info_prio[] = { 0, 1, 2, 3, 5, 6, 4 };  /* UPnP model: above SSDP, below mDNS model */
+
+static uint8_t nprio(uint8_t src) { return src < sizeof(name_prio) ? name_prio[src] : 0; }
+static uint8_t iprio(uint8_t src) { return src < sizeof(info_prio) ? info_prio[src] : 0; }
 
 struct dev {
 	uint8_t mac[6];
@@ -326,7 +334,7 @@ static void dev_set_name(struct dev *d, const char *name, uint8_t src)
 		clean[l - 6] = '\0';
 	if (src == N_MDNS && looks_like_uuid(clean))
 		src = N_MDNS_ID;
-	if (!clean[0] || src < d->name_src)
+	if (!clean[0] || nprio(src) < nprio(d->name_src))
 		return;
 	if (strcmp(d->name, clean) || d->name_src != src) {
 		snprintf(d->name, sizeof(d->name), "%s", clean);
@@ -340,7 +348,7 @@ static void dev_set_info(struct dev *d, const char *info, uint8_t src)
 	char clean[INFO_LEN];
 
 	clean_copy(clean, sizeof(clean), (const uint8_t *)info, strlen(info));
-	if (!clean[0] || src < d->info_src)
+	if (!clean[0] || iprio(src) < iprio(d->info_src))
 		return;
 	snprintf(d->info, sizeof(d->info), "%s", clean);
 	d->info_src = src;
@@ -603,6 +611,45 @@ static void parse_dhcp(const uint8_t *p, size_t len)
 	}
 }
 
+static void upnp_offer(const uint8_t *mac, uint32_t ip, uint16_t port, const char *path);
+
+/* LOCATION: http://<ip>[:port]/path -- only accepted if <ip> is the sender. */
+static void ssdp_location(const uint8_t *v, size_t n, uint32_t src_ip, const uint8_t *src_mac)
+{
+	char url[160], host[16], *h, *e, *path;
+	unsigned long port = 80;
+	struct in_addr a;
+	size_t hl, i;
+
+	if (n >= sizeof(url))
+		return;
+	memcpy(url, v, n);
+	url[n] = '\0';
+	if (strncasecmp(url, "http://", 7))
+		return;
+	h = url + 7;
+	hl = strcspn(h, ":/");
+	if (hl == 0 || hl >= sizeof(host))
+		return;
+	memcpy(host, h, hl);
+	host[hl] = '\0';
+	if (inet_pton(AF_INET, host, &a) != 1 || a.s_addr != src_ip || !ip_in_lan(a.s_addr))
+		return;  /* never fetch from anywhere but the device that told us */
+	e = h + hl;
+	if (*e == ':') {
+		port = strtoul(e + 1, &e, 10);
+		if (port < 1 || port > 65535)
+			return;
+	}
+	path = *e == '/' ? e : (char *)"/";
+	for (i = 0; path[i]; i++)
+		if ((unsigned char)path[i] <= ' ' || (unsigned char)path[i] >= 0x7f)
+			return;
+	if (strlen(path) >= 96)
+		return;
+	upnp_offer(src_mac, src_ip, (uint16_t)port, path);
+}
+
 static void parse_ssdp(const uint8_t *p, size_t len, uint32_t src_ip, const uint8_t *src_mac)
 {
 	const uint8_t *line = p, *end = p + len;
@@ -629,7 +676,16 @@ static void parse_ssdp(const uint8_t *p, size_t len, uint32_t src_ip, const uint
 				vl--;  /* strip CR before cleaning, or it becomes '?' */
 			clean_copy(server, sizeof(server), v, vl);
 			dev_set_info(d, server, I_SSDP);
-			break;
+		} else if (l > 9 && !strncasecmp((const char *)line, "LOCATION:", 9)) {
+			const uint8_t *v = line + 9;
+			size_t vl;
+
+			while (v < line + l && *v == ' ')
+				v++;
+			vl = (size_t)(line + l - v);
+			if (vl && v[vl - 1] == '\r')
+				vl--;
+			ssdp_location(v, vl, src_ip, src_mac);
 		}
 		if (!nl)
 			break;
@@ -771,14 +827,31 @@ static void raw_cb(struct uloop_fd *fd, unsigned int events)
 	}
 }
 
-/* Replies to our name queries are read from the raw socket; drain this one. */
+/*
+ * Unicast replies to our queries. NetBIOS and mDNS replies come from ports
+ * 137/5353 and are also seen (with the sender's MAC) on the raw socket.
+ * SSDP replies come from any port, so the raw filter can't catch them:
+ * handle them here, matching the sender to a device by IP.
+ */
 static void udp_cb(struct uloop_fd *fd, unsigned int events)
 {
-	uint8_t buf[1500];
+	uint8_t buf[2048];
+	struct sockaddr_in from;
+	socklen_t fl;
+	ssize_t n;
+	struct dev *d;
 
 	(void)events;
-	while (recv(fd->fd, buf, sizeof(buf), MSG_DONTWAIT) > 0)
-		;
+	for (;;) {
+		fl = sizeof(from);
+		n = recvfrom(fd->fd, buf, sizeof(buf), MSG_DONTWAIT | MSG_TRUNC, (struct sockaddr *)&from, &fl);
+		if (n < 0)
+			return;
+		if ((size_t)n > sizeof(buf) || n < 12 || memcmp(buf, "HTTP/1.1 200", 12))
+			continue;  /* not an SSDP search reply */
+		if ((d = dev_by_ip(from.sin_addr.s_addr)))
+			parse_ssdp(buf, (size_t)n, from.sin_addr.s_addr, d->mac);
+	}
 }
 
 static bool if_info(void)
@@ -848,6 +921,214 @@ static bool raw_open(void)
 	rawfd.cb = raw_cb;
 	uloop_fd_add(&rawfd, ULOOP_READ);
 	return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* UPnP device descriptions: friendlyName and modelName               */
+/* ------------------------------------------------------------------ */
+
+#define UPNP_MAX      32
+#define UPNP_BODY     16384
+#define UPNP_REFRESH  86400
+#define UPNP_TIMEOUT  3000
+
+struct upnp_target {
+	uint8_t mac[6];
+	uint16_t port;
+	uint32_t ip, fetched;
+	bool queued;
+	char path[96];
+};
+static struct upnp_target upnp[UPNP_MAX];
+static unsigned nupnp;
+
+static struct {
+	struct uloop_fd fd;
+	struct uloop_timeout timeout;
+	int cur;                 /* index in upnp[], -1 = idle */
+	bool connecting;
+	char req[256];
+	size_t req_len, sent, len;
+	char buf[UPNP_BODY + 1];
+} hc;  /* zero-initialised (.bss, no space in the binary); fd/cur set in main() */
+
+static void upnp_kick(void);
+
+/* Text of the first <tag>...</tag>, with the five XML entities decoded. */
+static bool xml_tag(const char *body, const char *tag, char *out, size_t size)
+{
+	char open[40], close_[40];
+	const char *a, *b2, *p;
+	size_t o = 0;
+
+	snprintf(open, sizeof(open), "<%s>", tag);
+	snprintf(close_, sizeof(close_), "</%s>", tag);
+	if (!(a = strstr(body, open)) || !(b2 = strstr(a += strlen(open), close_)))
+		return false;
+	for (p = a; p < b2 && o + 1 < size; p++) {
+		static const struct { const char *e; char c; } ents[] = {
+			{ "&amp;", '&' }, { "&lt;", '<' }, { "&gt;", '>' }, { "&quot;", '"' }, { "&apos;", '\'' } };
+		unsigned k;
+		char c = *p;
+
+		if (c == '&')
+			for (k = 0; k < 5; k++)
+				if (!strncmp(p, ents[k].e, strlen(ents[k].e)) && p + strlen(ents[k].e) <= b2) {
+					c = ents[k].c;
+					p += strlen(ents[k].e) - 1;
+					break;
+				}
+		out[o++] = c;
+	}
+	out[o] = '\0';
+	return o > 0;
+}
+
+static void upnp_done(void)
+{
+	struct upnp_target *t = &upnp[hc.cur];
+	char name[NAME_LEN], model[INFO_LEN], *body;
+	struct dev *d;
+
+	uloop_timeout_cancel(&hc.timeout);
+	if (hc.fd.fd >= 0) {
+		uloop_fd_delete(&hc.fd);
+		close(hc.fd.fd);
+		hc.fd.fd = -1;
+	}
+	hc.buf[hc.len] = '\0';
+	if (hc.len > 12 && !strncmp(hc.buf, "HTTP/1.", 7) && !strncmp(hc.buf + 8, " 200", 4) &&
+	    (body = strstr(hc.buf, "\r\n\r\n")) && (d = dev_find(t->mac)) && d->ip == t->ip) {
+		if (xml_tag(body, "friendlyName", name, sizeof(name)))
+			dev_set_name(d, name, N_UPNP);
+		if (xml_tag(body, "modelName", model, sizeof(model)))
+			dev_set_info(d, model, I_UPNP);
+	}
+	t->fetched = now_s();  /* success or not: try again in a day */
+	t->queued = false;
+	hc.cur = -1;
+	upnp_kick();
+}
+
+static void hc_timeout_cb(struct uloop_timeout *to)
+{
+	(void)to;
+	hc.len = 0;  /* treat as a failed fetch */
+	upnp_done();
+}
+
+static void hc_fd_cb(struct uloop_fd *fd, unsigned int events)
+{
+	ssize_t n;
+
+	if (hc.connecting) {
+		int err = 0;
+		socklen_t el = sizeof(err);
+
+		if (fd->error || getsockopt(fd->fd, SOL_SOCKET, SO_ERROR, &err, &el) || err) {
+			hc.len = 0;
+			upnp_done();
+			return;
+		}
+		if (!(events & ULOOP_WRITE))
+			return;
+		while (hc.sent < hc.req_len) {
+			n = send(fd->fd, hc.req + hc.sent, hc.req_len - hc.sent, MSG_NOSIGNAL);
+			if (n < 0 && (errno == EAGAIN || errno == EINTR))
+				return;
+			if (n <= 0) {
+				hc.len = 0;
+				upnp_done();
+				return;
+			}
+			hc.sent += (size_t)n;
+		}
+		hc.connecting = false;
+		uloop_fd_add(fd, ULOOP_READ);
+		return;
+	}
+	for (;;) {
+		if (hc.len >= UPNP_BODY) {  /* enough: descriptions put the names early */
+			upnp_done();
+			return;
+		}
+		n = recv(fd->fd, hc.buf + hc.len, UPNP_BODY - hc.len, 0);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0 && errno == EAGAIN)
+			return;
+		if (n <= 0) {  /* closed (or error): done */
+			upnp_done();
+			return;
+		}
+		hc.len += (size_t)n;
+	}
+}
+
+static void upnp_kick(void)
+{
+	char ip[16], port[8];
+	unsigned i;
+	int fd;
+
+	while (hc.cur < 0) {
+		for (i = 0; i < nupnp && !upnp[i].queued; i++)
+			;
+		if (i == nupnp)
+			return;
+		inet_ntop(AF_INET, &upnp[i].ip, ip, sizeof(ip));
+		snprintf(port, sizeof(port), "%u", upnp[i].port);
+		hc.req_len = (size_t)snprintf(hc.req, sizeof(hc.req),
+			"GET %s HTTP/1.0\r\nHost: %s:%s\r\nUser-Agent: lanwatch\r\nConnection: close\r\n\r\n",
+			upnp[i].path, ip, port);
+		fd = usock(USOCK_TCP | USOCK_NONBLOCK | USOCK_NUMERIC | USOCK_IPV4ONLY, ip, port);
+		if (fd < 0) {
+			upnp[i].queued = false;
+			upnp[i].fetched = now_s();
+			continue;
+		}
+		hc.cur = (int)i;
+		hc.fd.fd = fd;
+		hc.fd.cb = hc_fd_cb;
+		hc.connecting = true;
+		hc.sent = hc.len = 0;
+		uloop_fd_add(&hc.fd, ULOOP_WRITE);
+		hc.timeout.cb = hc_timeout_cb;
+		uloop_timeout_set(&hc.timeout, UPNP_TIMEOUT);
+	}
+}
+
+/* A device told us where its description is: fetch it, at most daily. */
+static void upnp_offer(const uint8_t *mac, uint32_t ip, uint16_t port, const char *path)
+{
+	struct upnp_target *t = NULL;
+	unsigned i, oldest = 0;
+
+	for (i = 0; i < nupnp; i++)
+		if (!memcmp(upnp[i].mac, mac, 6))
+			t = &upnp[i];
+	if (t) {
+		if (t->queued || (t->fetched && now_s() - t->fetched < UPNP_REFRESH && t->ip == ip))
+			return;
+	} else {
+		if (nupnp < UPNP_MAX) {
+			t = &upnp[nupnp++];
+		} else {
+			for (i = 1; i < nupnp; i++)
+				if (upnp[i].fetched < upnp[oldest].fetched && !upnp[i].queued)
+					oldest = i;
+			if (upnp[oldest].queued || (int)oldest == hc.cur)
+				return;
+			t = &upnp[oldest];
+		}
+		memset(t, 0, sizeof(*t));
+		memcpy(t->mac, mac, 6);
+	}
+	t->ip = ip;
+	t->port = port;
+	snprintf(t->path, sizeof(t->path), "%s", path);
+	t->queued = true;
+	upnp_kick();
 }
 
 /* ------------------------------------------------------------------ */
@@ -937,6 +1218,24 @@ static void send_cast_query(void)
 	sendto(udpfd, q, sizeof(q), 0, (struct sockaddr *)&to, sizeof(to));
 }
 
+/* Ask UPnP devices (TVs, media boxes, printers, NAS) to answer with their LOCATION. */
+static void send_ssdp_search(void)
+{
+	static const char q[] = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+	                        "MAN: \"ssdp:discover\"\r\nMX: 2\r\nST: upnp:rootdevice\r\n\r\n";
+	struct sockaddr_in to;
+
+	if (udpfd < 0)
+		return;
+	memset(&to, 0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_port = htons(1900);
+	inet_pton(AF_INET, "239.255.255.250", &to.sin_addr);
+	if (my_ip)
+		setsockopt(udpfd, IPPROTO_IP, IP_MULTICAST_IF, &my_ip, sizeof(my_ip));
+	sendto(udpfd, q, sizeof(q) - 1, 0, (struct sockaddr *)&to, sizeof(to));
+}
+
 static struct uloop_timeout sweep_timer, step_timer;
 static uint32_t sweep_next, sweep_end;   /* host order */
 
@@ -987,6 +1286,7 @@ static void step_cb(struct uloop_timeout *t)
 		    now - devs[i].name_tried >= NAME_RETRY)
 			send_name_queries(&devs[i]);
 	send_cast_query();
+	send_ssdp_search();
 	sweeps++;
 	sweep_last = now;
 }
@@ -1101,7 +1401,7 @@ static int m_devices(struct ubus_context *ctx, struct ubus_object *obj,
 			blobmsg_add_string(&b, "ip", inet_ntop(AF_INET, &d->ip, ip, sizeof(ip)));
 		if (d->name[0]) {
 			blobmsg_add_string(&b, "name", d->name);
-			blobmsg_add_string(&b, "name_source", name_src_names[d->name_src < 8 ? d->name_src : 0]);
+			blobmsg_add_string(&b, "name_source", name_src_names[d->name_src < 9 ? d->name_src : 0]);
 		}
 		oui_name(d->vendor, vendor, sizeof(vendor));
 		if (vendor[0])
@@ -1109,7 +1409,7 @@ static int m_devices(struct ubus_context *ctx, struct ubus_object *obj,
 		blobmsg_add_u8(&b, "private_mac", (d->mac[0] & 2) != 0);
 		if (d->info[0]) {
 			blobmsg_add_string(&b, "info", d->info);
-			blobmsg_add_string(&b, "info_source", info_src_names[d->info_src < 6 ? d->info_src : 0]);
+			blobmsg_add_string(&b, "info_source", info_src_names[d->info_src < 7 ? d->info_src : 0]);
 		}
 		blobmsg_add_u32(&b, "first_seen", d->first_seen);
 		blobmsg_add_u32(&b, "last_seen", d->last_seen);
@@ -1228,6 +1528,8 @@ int main(int argc, char **argv)
 			mkdir(dir, 0755);
 		}
 	}
+	hc.fd.fd = -1;
+	hc.cur = -1;
 	oui_load();
 	state_load();
 
