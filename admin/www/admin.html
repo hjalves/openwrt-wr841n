@@ -39,12 +39,16 @@ dt{color:var(--text2)}dd{margin:0;overflow-wrap:anywhere}
 .dot.on{background:var(--good)}.dot.off{background:var(--bad)}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th{text-align:left;font-weight:500;color:var(--text2);padding:6px 8px;border-bottom:1px solid var(--border)}
+th button.sort{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
+th button.sort[aria-pressed=true]{color:var(--text)}
+td.cmd{max-width:420px;overflow-wrap:anywhere}
 td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}
 tr:last-child td{border-bottom:0}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .scroll{overflow-x:auto}
 .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
 .muted{color:var(--muted)}.hint{color:var(--text2);font-size:13px;margin:4px 0 0}
+.card>.hint+.row{margin-top:14px}
 .row{display:grid;grid-template-columns:150px 1fr;gap:6px 16px;align-items:start;margin-bottom:12px}
 .row>label,.row>.lbl{padding-top:7px;color:var(--text2);font-size:14px}
 @media (max-width:600px){.row{grid-template-columns:1fr}.row>label,.row>.lbl{padding-top:0}}
@@ -144,6 +148,11 @@ async function busy(btn, fn) {
 function every(ms, fn) {
   const h = setInterval(() => { if (!document.hidden) fn().catch(() => {}); }, ms);
   timers.push(h);
+}
+// Scroll a box to its end; on first load the view isn't on screen yet, so wait until it is.
+function toBottom(e, tries = 120) {
+  if (e.isConnected && e.clientHeight) e.scrollTop = e.scrollHeight;
+  else if (tries) requestAnimationFrame(() => toBottom(e, tries - 1));
 }
 const fmtUp = s => { const d = s / 86400 | 0, h = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
 const fmtMB = b => (b / 1048576).toLocaleString(undefined, {maximumFractionDigits: 1}) + " MB";
@@ -518,7 +527,7 @@ async function viewNetwork(v) {
     el("p", {class: "hint", text: "What the router is using right now, which can differ from the saved settings until they're applied."}));
   v.append(pair(card("LAN",
     field("Address", ip), field("Netmask", mask),
-    field("Gateway", gw, "The router that connects to the internet (the Huawei)."),
+    field("Gateway", gw),
     field("DNS servers", dns, "Separated by spaces. Used by the router itself."),
     el("div", {class: "row"}, el("span", {class: "lbl", text: "DHCP server"}),
       el("div", {style: "padding-top:7px"}, dl.ignore == "1" ? "Off: another router hands out addresses." : "On")),
@@ -599,10 +608,54 @@ async function viewSystem(v) {
           el("td", null, el("div", {class: "inline"}, b("Start", "start"), b("Restart", "restart"), b("Stop", "stop"), en ? b("Disable", "disable") : b("Enable", "enable"))));
       })))), el("p", {class: "hint", text: "“–” means a one-off boot script, or a service not managed by procd."}));
   };
+  // Processes: BusyBox top, two readings 1 s apart (CPU % needs two); signals via procd's system.signal
+  const procBox = el("div"), pfilt = el("input", {type: "text", placeholder: "Filter", style: "max-width:220px"});
+  const kthreads = el("input", {type: "checkbox"}), prefresh = el("button", {class: "small", text: "Refresh"});
+  let procs = [], procMem = "", sortBy = "cpu";
+  const CORE = /^\/sbin\/(procd|ubusd|rpcd|netifd)\b|^\/usr\/sbin\/uhttpd\b/;
+  const loadProcs = async () => {
+    const r = await exec("/usr/bin/top", ["-b", "-n", 2, "-d", 1]);
+    const lines = (r.stdout || "").split("\n"), h = lines.map((l, i) => /^\s*PID\s+PPID/.test(l) ? i : -1).filter(i => i >= 0).pop();
+    if (h == null) throw new Error("Couldn't read the process list.");
+    procMem = (lines.slice(0, h).reverse().find(l => l.startsWith("Mem:")) || "").replace(/^Mem:\s*/, "");
+    procs = lines.slice(h + 1).map(l => /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)%\s+(\S+)%\s+(.*)$/.exec(l)).filter(Boolean)
+      .map(m => ({pid: +m[1], ppid: +m[2], user: m[3], stat: m[4], vsz: m[5], kb: parseFloat(m[5]) * (/m$/i.test(m[5]) ? 1024 : 1), mem: +m[6], cpu: +m[7], cmd: m[8]}))
+      .filter(p => !/^(\/usr\/bin\/)?top -b -n 2 -d 1$/.test(p.cmd));   // our own top
+    showProcs();
+  };
+  const signal = async (p, sig, name) => {
+    const core = CORE.test(p.cmd);
+    if (!await confirmAct(`${name} process ${p.pid}?`, [el("p", {class: "mono", text: p.cmd}),
+      core ? "This page depends on this process: you may lose access until the router restarts." :
+        sig == 1 ? "Hang up asks many daemons to reload their configuration." : sig == 15 ? "Asks the process to exit cleanly. Services managed by procd may be restarted." :
+          "Ends the process immediately, without letting it save anything."], name, sig == 1 && !core ? "primary" : "danger")) return;
+    try { await call("system", "signal", {pid: p.pid, signum: sig}); toast(`Sent ${name.toLowerCase()} to ${p.pid}.`); }
+    catch (e) { toast(e.message); }
+    await new Promise(r => setTimeout(r, 800)); await loadProcs().catch(() => {});
+  };
+  const showProcs = () => {
+    const f = pfilt.value.toLowerCase();
+    const list = procs.filter(p => (kthreads.checked || !/^\[.*\]$/.test(p.cmd)) && (!f || p.cmd.toLowerCase().includes(f) || String(p.pid) == f))
+      .sort((a, b) => sortBy == "pid" ? a.pid - b.pid : sortBy == "mem" ? b.kb - a.kb || a.pid - b.pid : b.cpu - a.cpu || b.kb - a.kb || a.pid - b.pid);
+    const sh = (label, key) => el("button", {class: "sort", "aria-pressed": String(sortBy == key), text: label + (sortBy == key ? (key == "pid" ? " ↑" : " ↓") : ""),
+      onclick: () => { sortBy = key; showProcs(); }});
+    procBox.replaceChildren(el("p", {class: "hint", style: "margin:0 0 8px", text: `${list.length} of ${procs.length} processes · Memory: ${procMem}`}),
+      el("div", {class: "scroll"}, el("table", null,
+        el("thead", null, el("tr", null, el("th", {class: "num"}, sh("PID", "pid")), el("th", {text: "User"}), el("th", {class: "num"}, sh("CPU", "cpu")),
+          el("th", {class: "num"}, sh("Memory", "mem")), el("th", {text: "Command"}), el("th"))),
+        el("tbody", null, list.map(p => {
+          const b = (label, sig) => { const x = el("button", {class: "small" + (sig == 9 ? " danger" : ""), text: label}); x.onclick = () => signal(p, sig, label); return x; };
+          return el("tr", null, el("td", {class: "num", text: p.pid}), el("td", {text: p.user}), el("td", {class: "num", text: p.cpu + "%"}),
+            el("td", {class: "num", text: `${p.vsz} (${p.mem}%)`}), el("td", {class: "cmd mono", text: p.cmd}),
+            el("td", null, p.pid == 1 ? null : el("div", {class: "inline", style: "flex-wrap:nowrap"}, b("Hang up", 1), b("Terminate", 15), b("Kill", 9))));
+        })))));
+  };
+  pfilt.oninput = showProcs; kthreads.onchange = showProcs;
+  prefresh.onclick = () => busy(prefresh, () => loadProcs().catch(e => procBox.replaceChildren(errBox(e))));
   // Log
   const logPre = el("pre", {class: "log mono"}), filt = el("input", {type: "text", placeholder: "Filter", style: "max-width:220px"});
   let logText = "";
-  const showLog = () => { const f = filt.value.toLowerCase(); logPre.textContent = logText.split("\n").filter(l => !f || l.toLowerCase().includes(f)).join("\n"); logPre.scrollTop = logPre.scrollHeight; };
+  const showLog = () => { const f = filt.value.toLowerCase(); logPre.textContent = logText.split("\n").filter(l => !f || l.toLowerCase().includes(f)).join("\n"); toBottom(logPre); };
   const loadLog = async () => { const r = await exec("/sbin/logread", ["-l", 300]); logText = (r.stdout || "").trimEnd(); showLog(); };
   filt.oninput = showLog;
   const refresh = el("button", {class: "small", text: "Refresh"}); refresh.onclick = () => busy(refresh, loadLog);
@@ -621,9 +674,11 @@ async function viewSystem(v) {
     card("Password", el("p", {class: "hint", text: "The root password, used for this page, LuCI and SSH."}),
       field("New password", p1), field("Repeat it", p2), err2, el("div", {class: "btns"}, save2))),
     card("Services", svcBox),
+    card("Processes", el("div", {class: "inline", style: "margin-bottom:10px"}, pfilt, el("label", {class: "check", style: "padding:0"}, kthreads, "Kernel threads"), prefresh),
+      procBox, el("p", {class: "hint", text: "CPU is measured over one second. Memory is the virtual size in KB (m = MB) and its share of RAM."})),
     card("System log", el("div", {class: "inline", style: "margin-bottom:10px"}, filt, refresh), logPre),
     card("Restart", el("p", {class: "hint", text: "Services save their data before the restart."}), el("div", {class: "btns"}, reboot)));
-  await Promise.all([loadSvcs(), loadLog()]);
+  await Promise.all([loadSvcs(), loadLog(), loadProcs().catch(e => procBox.replaceChildren(errBox(e)))]);
 }
 
 /* ---------- Backup & firmware ---------- */

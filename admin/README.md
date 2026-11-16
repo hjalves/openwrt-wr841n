@@ -4,7 +4,7 @@ A single-page admin interface at **http://192.168.0.254/admin.html**, linked fro
 
 | | |
 |---|---|
-| Page | `/www/admin.html`, 52 KB (17 KB gzipped) |
+| Page | `/www/admin.html`, 57 KB (19 KB gzipped) |
 | Helper | `/usr/libexec/admin-apply`, 3.8 KB shell script |
 | ACL | `/usr/share/rpcd/acl.d/admin.json` |
 | Packages added | `rpcd-mod-file`, `rpcd-mod-iwinfo`, `rpcd-mod-rpcsys`, `cgi-io` (official 15.05.1 packages, C, about 23 KB) |
@@ -18,7 +18,8 @@ A single-page admin interface at **http://192.168.0.254/admin.html**, linked fro
 | **Status** | Model, firmware, kernel, router time, uptime, load, memory, flash; LAN/WAN up or down, address, gateway, DNS; Wi-Fi state, channel, power, country, security; the Wi-Fi clients with signal, link rates and idle time, named from [lanwatch](../lanwatch/README.md). Refreshes every 5 s. |
 | **Wi-Fi** | On/off, network name, security (WPA2, WPA/WPA2, open), password, hidden; channel, width, transmit power and country. The channel, power and country lists come from the radio itself (`iwinfo`); country names come from the browser. A scan of nearby networks, with a count per channel. |
 | **Network** | LAN address, netmask, gateway, DNS servers. Shows whether the DHCP server is on, and what the LAN is using right now (address, gateway, DNS, bridge ports, MAC). |
-| **System** | Hostname; time zone (the POSIX TZ string the router needs is worked out from it, not shown); root password; services (start, stop, restart, enable or disable at boot); the system log with a filter; restart. |
+| **System** | Hostname; time zone (the POSIX TZ string the router needs is worked out from it, not shown); root password; services (start, stop, restart, enable or disable at boot); processes; the system log with a filter; restart. |
+| | **Processes**, like LuCI's: PID, user, CPU, memory and full command line, sortable by CPU, memory or PID, with a filter and optional kernel threads. CPU comes from BusyBox `top -b -n 2 -d 1` (the second reading; a single one always shows 0%). Hang up, Terminate and Kill send SIGHUP, SIGTERM or SIGKILL through procd's `system signal`, after a confirmation that warns specially for `procd`, `ubusd`, `rpcd`, `netifd` and `uhttpd`. |
 | **Backup & firmware** | Download a settings backup; restore one; firmware upgrade (upload with progress, the router's own image check, size and MD5, keep settings or not); factory reset. |
 
 Left out on purpose (still possible over SSH, or in LuCI while it's installed): firewall rules, the DHCP server's settings, static routes, IPv6, PPP and the package manager.
@@ -116,6 +117,7 @@ Run against the real router, in headless Chromium (desktop, and a phone in dark 
   - **Firmware:** a random 300 KB "firmware" was uploaded, and the router's check rejected it ("Invalid image type"), so Flash stayed disabled. Cancel deleted the file.
   - **Restore:** a non-backup file was refused and deleted.
   - **Services:** restarting `tinymdns` from the page gave it a new process ID.
+  - **Processes:** the list matched `top`, with sorting, the filter and the kernel-thread toggle working. A throwaway `sleep` started on the router was killed from the page and was gone afterwards. Terminate on `rpcd` showed the "this page depends on it" warning, and was cancelled.
 
 **Not run, because they would disrupt the LAN or the router:**
 - saving real Wi-Fi or network changes;
