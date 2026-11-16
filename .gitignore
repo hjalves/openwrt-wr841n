@@ -3,3 +3,4 @@ rtty/src/
 __pycache__/
 firmware/bin/
 firmware/.stage/
+firmware/backup/

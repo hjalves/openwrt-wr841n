@@ -2,7 +2,7 @@
 
 A custom OpenWrt 15.05.1 image for this router, built with the official **Image Builder** (official packages, same kernel), without LuCI and the parts an access point doesn't use. Everything we added is built in, rather than sitting in the small writable part of the flash.
 
-**Status:** built and inspected on the VM (2026-11-16). **Not flashed.** Flashing is step 3, only with an explicit go-ahead.
+**Status:** **flashed on 2026-11-16 at 22:54**, with settings kept, and checked afterwards (see "Flash and result" at the end). The image is `sha256 0b7a3787…8ca2c00`.
 
 ## What changes
 
@@ -67,9 +67,54 @@ Both are standard OpenWrt configurations.
 
 ## Before flashing (step 3)
 
-- **Keep the history:** add `/srv/huawei-trafficd/` and `/srv/lanwatch/` to the router's current `/etc/sysupgrade.conf`. The old firmware decides what a flash keeps, and it doesn't know about `/srv`. Otherwise the traffic history and device list start over.
-- **Back up the settings** (admin page, Backup & firmware).
-- **Check this hardware revision's recovery options**, in case the router doesn't boot. A serial console may be the only fallback.
-- **Flash with settings kept,** from the admin page or with `sysupgrade` over SSH. Settings, passwords and SSH host keys carry over.
+**Done 2026-11-16:**
+- **`/srv` added to the router's `/etc/sysupgrade.conf`.** The old firmware decides what a flash keeps, and didn't know about `/srv`. `sysupgrade -l` now lists 40 files to keep: the settings, passwords, SSH host keys, `/srv/huawei-trafficd/2026-11.log` and `/srv/lanwatch/devices.dat`.
+- **Backups in `firmware/backup/2026-11-16/`.** This folder is git-ignored and readable only by the owner, because it contains the password hash and Wi-Fi key.
+  - `settings.tar.gz`: the settings backup, `sysupgrade -b`.
+  - `overlay.tar.gz`: the whole writable area.
+  - `mtd0.bin`…`mtd5.bin`: raw copies of every flash partition, including the bootloader and `art` (this unit's Wi-Fi calibration, which can't be downloaded anywhere). The bootloader and `art` copies match the router's own MD5s.
+  - The router runs exactly the official 15.05.1 image: its root file system is byte-identical, and so is its kernel, apart from the TP-Link header's MD5 field.
+- **Recovery images** in `firmware/backup/recovery/`, already named `wr841nv9_tp_recovery.bin`:
+  - `official-15.05.1/`: the official factory image, matching OpenWrt's published SHA-256;
+  - `openwrt-wr841n/`: the factory image from this build.
 
-  Programs installed into the writable area go away, but they're all in the image now. Old config files whose packages are gone (`luci`, `ucitrack`, `dhcp`) stay, unused.
+  Both carry the hardware ID the bootloader checks, and contain no bootloader of their own.
+
+**Recovery options, if the new firmware misbehaves:**
+1. **Settings-level problem, router reachable:** fix it over SSH, or flash back with "keep settings".
+2. **Router boots but is unreachable:** OpenWrt failsafe mode. Press the reset button while the LED blinks during boot; the router then answers at 192.168.1.1 with no password.
+3. **Router doesn't boot: TFTP recovery in the bootloader.** This router's U-Boot (1.1.4, built 2014-10-13) has TP-Link's recovery code: the decompressed bootloader contains `setenv ipaddr 192.168.0.86`, `setenv serverip 192.168.0.66`, `_tp_recovery.bin` and "product id verify".
+   - Connect a **wired** computer to a LAN port, with the router unplugged from the rest of the network.
+   - Set the computer to 192.168.0.66/24 and run a TFTP server serving one of the recovery images.
+   - Hold the reset button while powering on, until the rightmost LED lights.
+   - The router fetches and writes the image, which takes a few minutes. This follows TP-Link's own guide, which uses this model (`wr841nv9_tp_recovery.bin`) as its example.
+   - This VM can't serve it: its network is bridged over Wi-Fi.
+4. **Last resort:** the serial console on the board.
+
+## Flash and result (2026-11-16)
+
+**How it was flashed:**
+- The image was copied to `/tmp/firmware.bin` and its MD5 checked on the router.
+- `sysupgrade -T` passed.
+- It was then started detached from the SSH session, so the disconnect couldn't interrupt it: `start-stop-daemon -S -b -p /var/run/sysupgrade.nopid -x /bin/sh -- -c "sysupgrade -v /tmp/firmware.bin >/tmp/sysupgrade.log 2>&1"`.
+- sysupgrade saved the 40 kept files, `/srv` included.
+- **The router was offline for about 35 seconds:** it stopped answering ping 31 s after the start and answered again at 65 s.
+
+**Checked afterwards:**
+- **Firmware:** 59 packages; no Lua, LuCI, dnsmasq, or loaded IPv6 modules.
+- **First-boot script:** ran once and deleted itself. `firewall.@defaults[0].disable_ipv6=1`, and uhttpd listens on `0.0.0.0:80` and `:443` only.
+- **Writable flash:** 1088 KB, **856 KB free** (was 576 KB, 204 KB free). Free RAM is about 15 MB (was about 11.5 MB). Our kept files take 38 KB; the rest of the "used" figure is JFFS2's reserved blocks.
+- **Services running:** huawei-trafficd, lanwatch, tinymdns, uhttpd, rpcd, dropbear, netifd, sysntpd and logd.
+- **Firewall** started with no errors (78 iptables rules).
+- **DNS without dnsmasq:** `/tmp/resolv.conf` lists 1.1.1.1 and 1.0.0.1, and lookups work. NTP set the clock.
+- **Kept data:**
+  - `/srv/huawei-trafficd/2026-11.log`, `/srv/lanwatch/devices.dat`, the settings, the password and the SSH host keys all came through;
+  - huawei-trafficd records again (signal, latency);
+  - lanwatch knows 15 devices;
+  - `openwrt.local` resolves.
+- **Wi-Fi:** the `wifi2` network is up and its clients reconnected. Its config is identical to the pre-flash backup.
+- **Web pages,** in headless Chromium, with no errors: the landing page (LuCI link hidden), `traffic.html`, `devices.html`, and every tab of the admin page (DHCP shown as "Not installed").
+
+Old config files whose packages are gone (`luci`, `ucitrack`, `dhcp`, `upnpd`) came along with the kept settings. They're unused and harmless.
+
+**Note on SSH:** this Dropbear refuses command lines over 1024 characters ("exec request failed"). Send longer scripts on standard input instead: `./router-ssh/connect 'sh -s' < script.sh`.
