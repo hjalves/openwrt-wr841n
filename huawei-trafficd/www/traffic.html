@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
-<title>LTE data usage</title>
+<title>LTE connection</title>
 <link rel="icon" href="data:,">
 <style>
 :root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--series-2:#eb6834;--series-3:#1baf7a;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
@@ -24,13 +24,14 @@ header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-be
 .status b{font-weight:600}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.tiles.now{grid-template-columns:repeat(3,1fr)}
 .tile,.card{background:var(--surface-1);border:1px solid var(--border);border-radius:10px}
 .tile{padding:12px 14px}
 .tile .label{color:var(--text-secondary);font-size:13px}
 .tile .value{font-size:22px;font-weight:600;margin-top:2px;white-space:nowrap}
 .tile .sub{color:var(--muted);font-size:12px;margin-top:2px}
 .key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:0}
-.k1{background:var(--series-1)}.k2{background:var(--series-2)}
+.k1{background:var(--series-1)}.key+.key{margin-left:-3px}.k2{background:var(--series-2)}
 .filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 12px}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface-1)}
 .seg button{border:0;border-right:1px solid var(--border);background:none;color:var(--text-secondary);font:inherit;padding:6px 11px;cursor:pointer}
@@ -78,13 +79,13 @@ th{color:var(--text-secondary);font-weight:600}
 .log td:first-child{white-space:nowrap;color:var(--text-secondary)}
 .log td:nth-child(2){white-space:nowrap;font-weight:600}
 .log td:last-child{color:var(--text-secondary);text-align:left}
-@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tiles.now{grid-template-columns:repeat(2,1fr)}.tiles.now .tile:last-child:nth-child(odd){grid-column:span 2}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tiles.now{grid-template-columns:repeat(2,1fr)}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
 </style>
 </head>
 <body>
 <main class="viz-root" id="root">
 <header>
-  <div><a class="back" href="/">← Router</a><h1>LTE data usage</h1></div>
+  <div><a class="back" href="/">← Router</a><h1>LTE connection</h1></div>
   <p class="status" id="status" role="status">Loading…</p>
 </header>
 
@@ -94,6 +95,7 @@ th{color:var(--text-secondary);font-weight:600}
   <div class="tile"><div class="label"><span class="key k2"></span>Session upload</div><div class="value" id="tSu">–</div><div class="sub" id="tSuSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k3"></span>Signal now</div><div class="value" id="tSig">–</div><div class="sub" id="tSigSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k3"></span>Internet now</div><div class="value" id="tNet">–</div><div class="sub" id="tNetSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k1"></span><span class="key k2"></span>Speed now</div><div class="value" id="tSpd">–</div><div class="sub" id="tSpdSub">&nbsp;</div></div>
 </section>
 
 <nav class="filters" aria-label="Time range">
@@ -703,6 +705,20 @@ function renderNet(x) {
           `${lossPct ? "Lossy · " : "OK · "}${lossPct} % loss over the last minute`);
 }
 
+// Average speed over the last minute, from the two newest per-minute samples.
+function renderSpeed(samples) {
+  const v = $("tSpd");
+  const n = samples ? samples.length : 0, a = n > 1 ? samples[n - 2] : null, b = n ? samples[n - 1] : null;
+  const dt = a && b ? b.time - a.time : 0;
+  if (!dt || dt > 180) {
+    v.textContent = "–";
+    setText("tSpdSub", n ? "waiting for two recent samples" : "no recent samples");
+    return;
+  }
+  v.textContent = rate(delta(a, b, "download") / dt) + " ↓";
+  setText("tSpdSub", `${rate(delta(a, b, "upload") / dt)} ↑ · last ${dt >= 90 ? Math.round(dt / 60) + " min" : "minute"}`);
+}
+
 function renderLatest(x) {
   renderNet(x);
   if (!x) return;
@@ -820,6 +836,7 @@ async function load() {
     try { latest = (await rpc("latest")).sample; } catch (e) { /* no data yet */ }
     renderStatus(status, latest);
     renderLatest(latest);
+    try { renderSpeed((await rpc("query", {tier: "fine", from: -200})).samples); } catch (e) { renderSpeed(null); }
 
     let from, to, b;
     if (state.preset) {
