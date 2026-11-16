@@ -146,6 +146,16 @@ th{color:var(--text-secondary);font-weight:600}
   <div class="chart" id="cP" tabindex="0" aria-describedby="kbd"></div>
 </section>
 <section class="card">
+  <h2 id="hG">Powerline to the Huawei: latency</h2>
+  <p class="note" id="nG">&nbsp;</p>
+  <div class="chart" id="cG" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
+  <h2 id="hQ">Powerline to the Huawei: packet loss</h2>
+  <p class="note" id="nQ">&nbsp;</p>
+  <div class="chart" id="cQ" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
   <h2>Connection log</h2>
   <p class="note" id="logSum">&nbsp;</p>
   <label class="note" id="cellsLbl" hidden><input type="checkbox" id="cells"> Show cell changes</label>
@@ -158,7 +168,7 @@ th{color:var(--text-secondary);font-weight:600}
   <span class="hint" id="kbd">Hover a chart, or focus one and use ← → for details.</span>
 </div>
 <table id="tbl" hidden>
-  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th><th>Avg latency</th><th>Packet loss</th></tr></thead>
+  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th><th>Avg latency</th><th>Packet loss</th><th>Powerline latency</th><th>Powerline loss</th></tr></thead>
   <tbody></tbody>
 </table>
 </div>
@@ -174,7 +184,7 @@ const H = 3600, D = 86400;
 const PRESETS = [["1h", H, 60], ["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H],
                  ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
 const BUCKETS = [60, 300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
-const CHARTS = ["cD", "cU", "cS", "cR", "cL", "cP"];
+const CHARTS = ["cD", "cU", "cS", "cR", "cL", "cP", "cG", "cQ"];
 const CHART_MR = 58;  // right margin, shared so all charts line up; holds zone names
 const PAGE = 1000;  // samples per request; keeps each router reply ~150 KB
 
@@ -322,6 +332,22 @@ function buildBuckets(samples, from, to, b, spacing) {
     }
   }
   for (const x of bk) { x.lat = x.rr ? x.rw / x.rr : null; x.loss = x.ps ? x.pl / x.ps : null; }
+  // Powerline: pings to the Huawei itself, same shape (no per-period minimum).
+  j = 0;
+  for (const x of bk) { x.gs = 0; x.gl = 0; x.gw = 0; x.gr = 0; x.gmax = null; }
+  for (const sm of samples) {
+    if (!sm.gw_sent || sm.time < from || sm.time >= to) continue;
+    while (j < bk.length && bk[j].e <= sm.time) j++;
+    if (j >= bk.length) break;
+    if (sm.time < bk[j].t) continue;
+    const x = bk[j], r = sm.gw_sent - sm.gw_lost;
+    x.gs += sm.gw_sent; x.gl += sm.gw_lost;
+    if (r > 0 && sm.gw_rtt_avg != null) {
+      x.gw += sm.gw_rtt_avg * r; x.gr += r;
+      x.gmax = x.gmax == null ? sm.gw_rtt_max : Math.max(x.gmax, sm.gw_rtt_max);
+    }
+  }
+  for (const x of bk) { x.glat = x.gr ? x.gw / x.gr : null; x.gloss = x.gs ? x.gl / x.gs : null; }
   return {bk, b, totD, totU};
 }
 
@@ -346,8 +372,9 @@ const cellName = c => `${Math.floor(c / 256)}/${c % 256}`;  // eNodeB / sector
 
 function connEvents(samples, from, to, spacing) {
   const ev = [];
-  // Internet outages: runs of samples where probes were sent but no target answered.
-  const down = s => s.ping_sent > 0 && !s.ping_ok;
+  // Internet outages: runs of samples where probes were sent but no target answered,
+  // while the Huawei itself still answered pings (otherwise it's a powerline outage, below).
+  const down = s => s.ping_sent > 0 && !s.ping_ok && !(s.gw_sent > 0 && s.gw_lost >= s.gw_sent);
   let runStart = null;
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
@@ -361,6 +388,21 @@ function connEvents(samples, from, to, spacing) {
   }
   if (runStart != null && runStart <= to)
     ev.push({t: runStart, kind: "internet", ev: "Internet unreachable", d: "No reply from any latency target; still ongoing at the latest sample."});
+  // Powerline: runs of samples where every ping to the Huawei itself went unanswered.
+  const plDown = s => s.gw_sent > 0 && s.gw_lost >= s.gw_sent;
+  runStart = null;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (plDown(s) && runStart == null) runStart = i ? samples[i - 1].time : s.time;
+    if (!plDown(s) && s.gw_sent > 0 && runStart != null) {
+      if (s.time >= from && runStart <= to)
+        ev.push({t: runStart, kind: "powerline", ev: "Huawei unreachable",
+                 d: `No reply from the Huawei over the powerline for about ${duration(samples[i - 1].time - runStart || 60)}.`});
+      runStart = null;
+    }
+  }
+  if (runStart != null && runStart <= to)
+    ev.push({t: runStart, kind: "powerline", ev: "Huawei unreachable", d: "No reply from the Huawei over the powerline; still ongoing at the latest sample."});
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1], b = samples[i], dt = b.time - a.time;
     if (b.time < from || b.time > to || dt <= 0) continue;
@@ -510,51 +552,55 @@ function drawLine(box, data, k) {
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
-// Average latency per period as a line, with the period's min-max range as a wash.
-function drawLatency(box, data) {
+// Average latency per period as a line, with the period's range (min or average to max) as a wash.
+// k picks the probes: internet {lat, min, max, ps} or powerline (no min).
+const K_NET = {lat: "lat", min: "rmin", max: "rmax", ps: "ps", loss: "loss", what: "internet"};
+const K_PL = {lat: "glat", min: null, max: "gmax", ps: "gs", loss: "gloss", what: "powerline"};
+function drawLatency(box, data, k = K_NET) {
   box.textContent = "";
   const W = Math.max(280, box.clientWidth), PH = 130, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
   const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
-  const avgs = data.bk.map(x => x.lat).filter(v => v != null);
-  const maxs = data.bk.map(x => x.rmax).filter(v => v != null);
+  const avgs = data.bk.map(x => x[k.lat]).filter(v => v != null);
+  const maxs = data.bk.map(x => x[k.max]).filter(v => v != null);
   // One extreme spike shouldn't flatten everything: cap the axis at 3x the highest average.
   const top0 = Math.max(10, Math.min(Math.max(...maxs, 0), 3 * Math.max(...avgs, 0)) || 10);
   const ticks = niceTicks(top0), top = ticks[ticks.length - 1];
   const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
-                         "aria-label": `Average internet latency per ${bucketName(data.b)}`}, box);
+                         "aria-label": `Average ${k.what} latency per ${bucketName(data.b)}`}, box);
   const y = v => MT + PH - Math.min(v, top) / top * PH;
   for (const t of ticks) {
     el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
     el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, `${t} ms`);
   }
   const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
-  data.bk.forEach((x, i) => {  // min-max range
-    if (x.rmin == null) return;
-    const yt = y(x.rmax), yb = y(x.rmin);
+  data.bk.forEach((x, i) => {  // range
+    const lo = k.min ? x[k.min] : x[k.lat];
+    if (lo == null || x[k.max] == null) return;
+    const yt = y(x[k.max]), yb = y(lo);
     el("rect", {class: "range", x: ML + i * slot + 1, width: Math.max(1, slot - 2), y: yt, height: Math.max(1, yb - yt), rx: 2}, svg);
   });
   let d = "", run = [];
   const flush = () => { if (run.length === 1) el("circle", {class: "pt", cx: run[0][0], cy: run[0][1], r: 4}, svg); run = []; };
   data.bk.forEach((x, i) => {
-    if (x.lat == null) { flush(); return; }
-    const p = [ML + i * slot + slot / 2, y(x.lat)];
+    if (x[k.lat] == null) { flush(); return; }
+    const p = [ML + i * slot + slot / 2, y(x[k.lat])];
     d += (run.length ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1);
     run.push(p);
   });
   flush();
   if (d) el("path", {class: "line", d}, svg);
   if (!avgs.length) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
-                       data.bk.some(x => x.ps) ? "No replies in this range" : "No latency measurements in this range");
+                       data.bk.some(x => x[k.ps]) ? "No replies in this range" : "No latency measurements in this range");
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
 // Packet loss per period as bars on a fixed 0-100 % axis.
-function drawLoss(box, data) {
+function drawLoss(box, data, k = K_NET) {
   box.textContent = "";
   const W = Math.max(280, box.clientWidth), PH = 90, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
   const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
   const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
-                         "aria-label": `Packet loss per ${bucketName(data.b)}`}, box);
+                         "aria-label": `${k.what === "internet" ? "Internet" : "Powerline"} packet loss per ${bucketName(data.b)}`}, box);
   const y = v => MT + PH - v * PH;
   for (const t of [0, 0.5, 1]) {
     el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
@@ -564,10 +610,11 @@ function drawLoss(box, data) {
   const bw = Math.max(1, Math.min(24, slot - 2));
   let any = false;
   data.bk.forEach((x, i) => {
-    if (x.loss == null) return;
+    const loss = x[k.loss];
+    if (loss == null) return;
     any = true;
-    if (x.loss <= 0) return;
-    const h = Math.max(1, x.loss * PH), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h, r = Math.min(4, bw / 2, h);
+    if (loss <= 0) return;
+    const h = Math.max(1, loss * PH), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h, r = Math.min(4, bw / 2, h);
     el("path", {class: "s3", d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
   });
   if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg, "No latency measurements in this range");
@@ -588,7 +635,7 @@ function setHover(i, cx, cy) {
   t.className = "t";
   t.textContent = periodLabel(x.t, x.e);
   tip.appendChild(t);
-  if (!x.cov && !x.sw && !x.ps) {
+  if (!x.cov && !x.sw && !x.ps && !x.gs) {
     const r = document.createElement("div");
     r.textContent = "No data";
     tip.appendChild(r);
@@ -617,6 +664,9 @@ function setHover(i, cx, cy) {
       const rows = [[x.lat != null ? `${Math.round(x.lat)} ms` : "–",
                      x.lat != null ? `latency avg · ${x.rmin}–${x.rmax} ms` : "latency · no replies"],
                     [`${Math.round(x.loss * 100)} %`, `packet loss · ${x.pl} of ${x.ps} probes`]];
+      if (x.gs) rows.push([x.glat != null ? `${Math.round(x.glat)} ms` : "–",
+                           x.glat != null ? `powerline avg · max ${x.gmax} ms` : "powerline · no replies"],
+                          [`${Math.round(x.gloss * 100)} %`, `powerline loss · ${x.gl} of ${x.gs} probes`]);
       for (const [val, label] of rows) {
         const r = document.createElement("div"), key = document.createElement("i"),
               v = document.createElement("b"), s = document.createElement("span");
@@ -702,8 +752,9 @@ function renderNet(x) {
   dot.className = "dot";
   dot.style.background = `var(${down ? "--critical" : lossPct ? "--warning" : "--good"})`;
   v.append(dot, document.createTextNode(down ? "Down" : `${x.rtt_avg} ms`));
-  setText("tNetSub", down ? `no reply from any target · ${x.ping_sent} probes` :
-          `${lossPct ? "Lossy · " : "OK · "}${lossPct} % loss over the last minute`);
+  const plDown = x.gw_sent > 0 && x.gw_lost >= x.gw_sent, plLoss = x.gw_sent ? Math.round(100 * x.gw_lost / x.gw_sent) : 0;
+  setText("tNetSub", down ? (plDown ? "the Huawei doesn't answer either: powerline" : `no reply from any target · ${x.ping_sent} probes`) :
+          `${lossPct ? "Lossy · " : "OK · "}${lossPct} % loss over the last minute` + (plLoss ? ` · powerline ${plLoss} %` : ""));
 }
 
 // Average speed over the last minute, from the two newest per-minute samples.
@@ -780,6 +831,12 @@ function renderRange() {
   setText("nP", "Share of pings that got no reply. 100 % with the Huawei still answering means the internet behind LTE was down.");
   drawLatency($("cL"), data);
   drawLoss($("cP"), data);
+  setText("hG", `Powerline to the Huawei: latency, average per ${per}`);
+  setText("hQ", `Powerline to the Huawei: packet loss, per ${per}`);
+  setText("nG", "Round-trip time of pings to the Huawei itself, which only cross the powerline. The light band reaches each period's slowest reply.");
+  setText("nQ", "Share of those pings that got no reply. Loss here but not in the internet chart above is the powerline; loss in both points to the powerline too, since the internet pings cross it as well.");
+  drawLatency($("cG"), data, K_PL);
+  drawLoss($("cQ"), data, K_PL);
   renderLog();
   const tb = $("tbl").tBodies[0];
   tb.textContent = "";
@@ -788,7 +845,8 @@ function renderRange() {
     const cells = [periodLabel(x.t, x.e)].concat(x.cov
       ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"],
       x.sw ? [sig("sinr", Math.round(x.sinr)), sig("rsrp", Math.round(x.rsrp))] : ["–", "–"],
-      x.ps ? [x.lat != null ? `${Math.round(x.lat)} ms` : "–", `${Math.round(x.loss * 100)} %`] : ["–", "–"]);
+      x.ps ? [x.lat != null ? `${Math.round(x.lat)} ms` : "–", `${Math.round(x.loss * 100)} %`] : ["–", "–"],
+      x.gs ? [x.glat != null ? `${Math.round(x.glat)} ms` : "–", `${Math.round(x.gloss * 100)} %`] : ["–", "–"]);
     for (const c of cells) tr.insertCell().textContent = c;
   }
 }
@@ -797,7 +855,7 @@ function renderLog() {
   const ev = connEvents(view.samples, view.from, view.to, view.spacing);
   const counts = {};
   for (const e of ev) counts[e.kind] = (counts[e.kind] || 0) + 1;
-  const names = {internet: ["internet outage", "internet outages"],
+  const names = {internet: ["internet outage", "internet outages"], powerline: ["powerline outage", "powerline outages"],
                  session: ["new session", "new sessions"], gap: ["collection gap", "collection gaps"],
                  status: ["status change", "status changes"], net: ["network type change", "network type changes"],
                  cell: ["cell change", "cell changes"]};
@@ -908,14 +966,16 @@ $("csvBtn").addEventListener("click", () => {
   if (!view) return;
   const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b," +
                 "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type," +
-                "ping_sent,ping_lost,ping_ok_mask,rtt_min_ms,rtt_avg_ms,rtt_max_ms"];
+                "ping_sent,ping_lost,ping_ok_mask,rtt_min_ms,rtt_avg_ms,rtt_max_ms," +
+                "gw_sent,gw_lost,gw_rtt_avg_ms,gw_rtt_max_ms"];
   const o = v => v == null ? "" : v;
   for (const s of view.samples)
     if (s.time >= view.from && s.time <= view.to)
       rows.push([s.time, new Date(s.time * 1000).toISOString(), s.uptime, s.download, s.upload,
                  s.total_download, s.total_upload, o(s.rsrp), o(s.rsrq), o(s.sinr), o(s.rssi),
                  o(s.signal_samples), o(s.cell_id), o(s.conn_status), o(s.net_type),
-                 o(s.ping_sent), o(s.ping_lost), o(s.ping_ok), o(s.rtt_min), o(s.rtt_avg), o(s.rtt_max)].join(","));
+                 o(s.ping_sent), o(s.ping_lost), o(s.ping_ok), o(s.rtt_min), o(s.rtt_avg), o(s.rtt_max),
+                 o(s.gw_sent), o(s.gw_lost), o(s.gw_rtt_avg), o(s.gw_rtt_max)].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
   a.download = `lte-usage-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;

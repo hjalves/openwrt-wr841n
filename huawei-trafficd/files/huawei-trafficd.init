@@ -12,7 +12,7 @@ add_target() {
 
 start_service() {
 	local host port interval history coarse_interval coarse_history
-	local state_file coarse_state_file save_every signal flash_dir flash_every latency
+	local state_file coarse_state_file save_every signal flash_dir flash_every latency gateway_ping
 
 	config_load huawei-trafficd
 	config_get host main host 192.168.0.1
@@ -26,6 +26,7 @@ start_service() {
 	config_get save_every main save_every 0
 	config_get signal main signal 1
 	config_get_bool latency main latency 1
+	config_get_bool gateway_ping main gateway_ping 1
 	config_get flash_dir main flash_dir
 	config_get flash_every main flash_every 86400
 
@@ -41,6 +42,7 @@ start_service() {
 	else
 		config_list_foreach main target add_target
 	fi
+	[ "$gateway_ping" = 0 ] && procd_append_param command -g
 	[ -n "$flash_dir" ] && procd_append_param command -D "$flash_dir" -E "$flash_every"
 	procd_set_param respawn 3600 5 0
 	procd_close_instance

@@ -47,7 +47,7 @@
 #define QUERY_DEFAULT_MAX 1000
 #define QUERY_HARD_MAX    4000        /* keeps replies well under ubus' 1 MiB */
 #define STATE_MAGIC       0x48545246u /* "HTRF" */
-#define STATE_VERSION     4u          /* v4: 64-byte samples with latency; v1-v3 still load */
+#define STATE_VERSION     5u          /* v5: 72-byte samples with Huawei latency; v1-v4 still load */
 #define SIG_NONE          (-128)      /* unknown rsrq/sinr/rssi */
 #define RSRP_NONE         INT16_MIN   /* unknown rsrp */
 #define NET_NONE          255         /* unknown network type */
@@ -74,10 +74,17 @@ struct sample {
 	uint16_t ping_sent;     /* probes resolved in this period; 0 = no data */
 	uint16_t ping_lost;     /* ... of which got no reply */
 	uint16_t rtt_min, rtt_avg, rtt_max;  /* ms, over the replies */
+	/* Latency to the Huawei itself (its LAN address): only the local link,
+	 * which here is a powerline. Probes alongside the internet ones. */
+	uint16_t gw_sent;       /* probes resolved in this period; 0 = no data */
+	uint16_t gw_lost;       /* ... of which got no reply */
+	uint16_t gw_rtt_avg, gw_rtt_max;  /* ms, over the replies */
 };
 
-/* State files store samples as raw structs: the size must not change silently. */
-typedef char sample_is_64_bytes[sizeof(struct sample) == 64 ? 1 : -1];
+/* State files store samples as raw structs: the size must not change silently.
+ * Version 4 files hold the first 64 bytes of this layout (no gw_* fields). */
+typedef char sample_is_72_bytes[sizeof(struct sample) == 72 ? 1 : -1];
+#define SAMPLE_V4_SIZE 64
 
 /* The 56-byte sample of state file version 3 (signal, no latency). */
 struct sample_v3 {
@@ -107,6 +114,7 @@ static void sample_clear_signal(struct sample *s)
 	s->ping_ok = 0;
 	s->ping_sent = s->ping_lost = 0;
 	s->rtt_min = s->rtt_avg = s->rtt_max = 0;
+	s->gw_sent = s->gw_lost = s->gw_rtt_avg = s->gw_rtt_max = 0;
 }
 
 /* ---- configuration ---- */
@@ -115,6 +123,7 @@ static const char *cfg_port = "80";
 static const char *cfg_socket;     /* ubus socket, NULL = default */
 static bool cfg_signal = true;     /* also read device/signal + monitoring/status */
 static bool cfg_latency = true;    /* ICMP echo to the latency targets */
+static bool cfg_gw_ping = true;    /* ... and to the Huawei itself (-H, if an IPv4 address) */
 #define PING_MAX_TARGETS 4
 static const char *cfg_targets[PING_MAX_TARGETS] = { "1.1.1.1", "8.8.8.8" };
 static unsigned cfg_ntargets = 2;
@@ -178,6 +187,8 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 	uint32_t p_sent = 0, p_lost = 0, p_rtt_w = 0, p_replies = 0;
 	uint16_t p_min = 0, p_max = 0;
 	uint8_t p_ok = 0;
+	uint32_t g_sent = 0, g_lost = 0, g_rtt_w = 0, g_replies = 0;
+	uint16_t g_max = 0;
 
 	for (i = fine.count; i-- > 0;) {
 		const struct sample *f = ring_at(&fine, i);
@@ -205,6 +216,18 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 					p_max = f->rtt_max;
 			}
 		}
+		if (f->gw_sent) {
+			unsigned r = f->gw_sent > f->gw_lost ? f->gw_sent - f->gw_lost : 0;
+
+			g_sent += f->gw_sent;
+			g_lost += f->gw_lost;
+			if (r) {
+				g_rtt_w += (uint32_t)f->gw_rtt_avg * r;
+				g_replies += r;
+				if (f->gw_rtt_max > g_max)
+					g_max = f->gw_rtt_max;
+			}
+		}
 		if (!f->sig_n || f->rsrp == RSRP_NONE)
 			continue;
 		rsrp += f->rsrp;
@@ -220,6 +243,12 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 		c->rtt_avg = p_replies ? (uint16_t)((p_rtt_w + p_replies / 2) / p_replies) : 0;
 		c->rtt_min = p_min;
 		c->rtt_max = p_max;
+	}
+	if (g_sent) {
+		c->gw_sent = g_sent > 65535 ? 65535 : (uint16_t)g_sent;
+		c->gw_lost = g_lost > 65535 ? 65535 : (uint16_t)g_lost;
+		c->gw_rtt_avg = g_replies ? (uint16_t)((g_rtt_w + g_replies / 2) / g_replies) : 0;
+		c->gw_rtt_max = g_max;
 	}
 	if (!n)
 		return;
@@ -316,9 +345,13 @@ static void ring_load(struct ring *r)
 		syslog(LOG_NOTICE, "%s was recorded at %us intervals, now %us",
 		       r->state, hdr[3], r->interval);
 	for (i = 0; i < hdr[2]; i++) {
-		if (hdr[1] >= 4) {
+		if (hdr[1] >= 5) {
 			if (fread(&s, sizeof(s), 1, f) != 1)
 				break;
+		} else if (hdr[1] == 4) {  /* 64-byte samples: no Huawei latency */
+			if (fread(&s, SAMPLE_V4_SIZE, 1, f) != 1)
+				break;
+			s.gw_sent = s.gw_lost = s.gw_rtt_avg = s.gw_rtt_max = 0;
 		} else if (hdr[1] == 3) {  /* 56-byte samples: signal, no latency */
 			struct sample_v3 o;
 
@@ -367,23 +400,26 @@ static void ring_load(struct ring *r)
  * Whole old months are deleted, so files are never rewritten.
  *
  * Each append is one block: 12-byte header + delta-encoded records.
- *   "HB", version 1, record count, payload length (u16 LE), 0 (u16),
+ *   "HB", version (1, or 2 when records may carry F_GW), record count,
+ *   payload length (u16 LE), 0 (u16),
  *   CRC-32 of the payload (u32 LE)
  * The first record of a block is encoded against an all-zero sample, so
  * every block decodes on its own and a torn write loses only that block.
  * Record: flags, then varints: time delta, uptime drift (uptime delta minus
  * time delta), session download/upload deltas, total-minus-session offset
  * deltas; [signal: rsrp+140, rsrq+40, sinr+40, rssi+140, readings];
- * [meta: cell, status, network type]. About 18 bytes per hourly record.
+ * [meta: cell, status, network type]; [ping: sent, lost, rtt min/avg/max,
+ * ok mask]; [gw: sent, lost, rtt avg/max]. About 30 bytes per hourly record.
  */
 #define FLASH_MONTHS     13           /* keep this many monthly files */
 #define FLASH_MIN_FREE   (64 * 1024)  /* never fill the overlay past this */
 #define BLOCK_HDR        12
 #define BLOCK_MAX        255          /* records per block */
-#define REC_MAX          96           /* worst case: 1 + 6x10 + 5 + 9 + 16 = 91 bytes */
+#define REC_MAX          104          /* worst case: 1 + 6x10 + 5 + 9 + 16 + 12 = 103 bytes */
 #define F_SIG            1
 #define F_META           2
 #define F_PING           4
+#define F_GW             8            /* block version 2 */
 #define TMPFS_MAGIC_     0x01021994
 #define RAMFS_MAGIC_     0x858458f6
 
@@ -474,7 +510,8 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 	int64_t dt = (int64_t)b->time - a->time;
 	size_t n = 0;
 
-	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0) | (b->ping_sent ? F_PING : 0);
+	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0) | (b->ping_sent ? F_PING : 0) |
+	         (b->gw_sent ? F_GW : 0);
 	n += put_sv(p + n, dt);
 	n += put_sv(p + n, (int64_t)b->uptime - a->uptime - dt);
 	n += put_sv(p + n, (int64_t)(b->download - a->download));
@@ -500,6 +537,12 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 		n += put_uv(p + n, b->rtt_avg);
 		n += put_uv(p + n, b->rtt_max);
 		p[n++] = b->ping_ok;
+	}
+	if (b->gw_sent) {
+		n += put_uv(p + n, b->gw_sent);
+		n += put_uv(p + n, b->gw_lost);
+		n += put_uv(p + n, b->gw_rtt_avg);
+		n += put_uv(p + n, b->gw_rtt_max);
 	}
 	return n;
 }
@@ -529,6 +572,7 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 	b->sig_n = 0;
 	b->ping_ok = 0;
 	b->ping_sent = b->ping_lost = b->rtt_min = b->rtt_avg = b->rtt_max = 0;
+	b->gw_sent = b->gw_lost = b->gw_rtt_avg = b->gw_rtt_max = 0;
 	if (f & F_SIG) {
 		if (end - *p < 5)
 			return false;
@@ -561,6 +605,18 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 		b->rtt_avg = (uint16_t)v[3];
 		b->rtt_max = (uint16_t)v[4];
 		b->ping_ok = *(*p)++;
+	}
+	if (f & F_GW) {
+		uint64_t v[4];
+		int k;
+
+		for (k = 0; k < 4; k++)
+			if (!get_uv(p, end, &v[k]) || v[k] > 65535)
+				return false;
+		b->gw_sent = (uint16_t)v[0];
+		b->gw_lost = (uint16_t)v[1];
+		b->gw_rtt_avg = (uint16_t)v[2];
+		b->gw_rtt_max = (uint16_t)v[3];
 	}
 	return true;
 }
@@ -636,7 +692,7 @@ static void flash_read_month(unsigned month, void (*fn)(const struct sample *))
 			break;
 		len = hdr[4] | hdr[5] << 8;
 		count = hdr[3];
-		if (hdr[0] != 'H' || hdr[1] != 'B' || hdr[2] != 1 || !count)
+		if (hdr[0] != 'H' || hdr[1] != 'B' || hdr[2] < 1 || hdr[2] > 2 || !count)
 			break;
 		free(buf);
 		if (!(buf = malloc(len ? len : 1)) || fread(buf, 1, len, f) != len)
@@ -715,7 +771,7 @@ static bool flash_append(unsigned month, const uint8_t *payload, size_t len, uns
 	ssize_t w;
 	int fd;
 
-	hdr[0] = 'H'; hdr[1] = 'B'; hdr[2] = 1; hdr[3] = (uint8_t)count;
+	hdr[0] = 'H'; hdr[1] = 'B'; hdr[2] = 2; hdr[3] = (uint8_t)count;
 	hdr[4] = len & 0xff; hdr[5] = len >> 8; hdr[6] = hdr[7] = 0;
 	hdr[8] = crc & 0xff; hdr[9] = crc >> 8 & 0xff; hdr[10] = crc >> 16 & 0xff; hdr[11] = crc >> 24;
 	if (!month_file(path, sizeof(path), month))
@@ -1201,7 +1257,8 @@ static void http_start(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Internet latency: one ICMP echo every 10 s, alternating targets     */
+/* Latency: every 10 s one ICMP echo to the internet (alternating      */
+/* targets) and one to the Huawei itself (the local, powerline hop)     */
 /* ------------------------------------------------------------------ */
 
 #ifndef PING_GAP_MS
@@ -1216,7 +1273,9 @@ static void http_start(void)
 
 static struct uloop_fd icmp_fd = { .fd = -1 };
 static struct uloop_timeout ping_timer;
-static struct in_addr ping_addr[PING_MAX_TARGETS];
+#define GW_TARGET        PING_MAX_TARGETS  /* ping_addr[] slot of the Huawei */
+static struct in_addr ping_addr[PING_MAX_TARGETS + 1];
+static bool gw_ping;               /* Huawei probes active */
 static uint16_t ping_id, ping_seq;
 static unsigned ping_next;
 static struct {
@@ -1230,6 +1289,10 @@ static struct {                     /* results since the last sample */
 	uint32_t rtt_sum, replies;
 	uint8_t ok;
 } pacc;
+static struct {                     /* Huawei probes since the last sample */
+	uint16_t sent, lost, max;
+	uint32_t rtt_sum, replies;
+} gacc;
 
 static uint64_t mono_us(void)
 {
@@ -1256,6 +1319,23 @@ static uint16_t inet_csum(const uint8_t *p, size_t n)
 static void ping_resolve(unsigned slot, int64_t rtt_us)
 {
 	ping_slot[slot].used = false;
+	if (ping_slot[slot].target == GW_TARGET) {
+		if (gacc.sent < 65535)
+			gacc.sent++;
+		if (rtt_us < 0) {
+			if (gacc.lost < 65535)
+				gacc.lost++;
+		} else {
+			uint32_t ms = (uint32_t)((rtt_us + 500) / 1000);
+			uint16_t m = ms > 65535 ? 65535 : (uint16_t)(ms ? ms : 1);
+
+			gacc.rtt_sum += m;
+			gacc.replies++;
+			if (m > gacc.max)
+				gacc.max = m;
+		}
+		return;
+	}
 	if (pacc.sent < 65535)
 		pacc.sent++;
 	if (rtt_us < 0) {
@@ -1280,6 +1360,13 @@ static void ping_resolve(unsigned slot, int64_t rtt_us)
 /* Move the results gathered since the last sample into s. */
 static void ping_attach(struct sample *s)
 {
+	if (gacc.sent) {
+		s->gw_sent = gacc.sent;
+		s->gw_lost = gacc.lost;
+		s->gw_rtt_max = gacc.max;
+		s->gw_rtt_avg = gacc.replies ? (uint16_t)((gacc.rtt_sum + gacc.replies / 2) / gacc.replies) : 0;
+		memset(&gacc, 0, sizeof(gacc));
+	}
 	if (!cfg_latency || !pacc.sent)
 		return;
 	s->ping_sent = pacc.sent;
@@ -1331,24 +1418,18 @@ static void icmp_cb(struct uloop_fd *fd, unsigned int events)
 	}
 }
 
-static void ping_timer_cb(struct uloop_timeout *t)
+static void ping_send(unsigned target, uint64_t now)
 {
 	uint8_t pkt[24];
 	struct sockaddr_in to;
-	uint64_t now = mono_us();
-	unsigned k, slot = PING_SLOTS, target;
+	unsigned k, slot = PING_SLOTS;
 	uint16_t c;
 
-	uloop_timeout_set(t, PING_GAP_MS);
-	for (k = 0; k < PING_SLOTS; k++)  /* unanswered for too long: lost */
-		if (ping_slot[k].used && now - ping_slot[k].sent_us >= PING_TIMEOUT_MS * 1000u)
-			ping_resolve(k, -1);
 	for (k = 0; k < PING_SLOTS && slot == PING_SLOTS; k++)
 		if (!ping_slot[k].used)
 			slot = k;
 	if (slot == PING_SLOTS || icmp_fd.fd < 0)
 		return;
-	target = ping_next++ % cfg_ntargets;
 	memset(pkt, 0, sizeof(pkt));
 	pkt[0] = 8;  /* echo request */
 	pkt[4] = (uint8_t)(ping_id >> 8);
@@ -1365,10 +1446,8 @@ static void ping_timer_cb(struct uloop_timeout *t)
 	to.sin_addr = ping_addr[target];
 	if (sendto(icmp_fd.fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
 		/* No route (e.g. LTE down): a probe that can't leave is a lost probe. */
-		if (pacc.sent < 65535)
-			pacc.sent++;
-		if (pacc.lost < 65535)
-			pacc.lost++;
+		ping_slot[slot].target = (uint8_t)target;
+		ping_resolve(slot, -1);
 		return;
 	}
 	ping_slot[slot].used = true;
@@ -1377,16 +1456,36 @@ static void ping_timer_cb(struct uloop_timeout *t)
 	ping_slot[slot].sent_us = now;
 }
 
+static void ping_timer_cb(struct uloop_timeout *t)
+{
+	uint64_t now = mono_us();
+	unsigned k;
+
+	uloop_timeout_set(t, PING_GAP_MS);
+	for (k = 0; k < PING_SLOTS; k++)  /* unanswered for too long: lost */
+		if (ping_slot[k].used && now - ping_slot[k].sent_us >= PING_TIMEOUT_MS * 1000u)
+			ping_resolve(k, -1);
+	if (cfg_latency)
+		ping_send(ping_next++ % cfg_ntargets, now);
+	if (gw_ping)
+		ping_send(GW_TARGET, now);
+}
+
 static bool ping_open(void)
 {
 	uint32_t filter = ~(1u << 0);  /* deliver only type 0, echo reply */
 	unsigned i;
 
-	for (i = 0; i < cfg_ntargets; i++)
+	for (i = 0; cfg_latency && i < cfg_ntargets; i++)
 		if (inet_pton(AF_INET, cfg_targets[i], &ping_addr[i]) != 1) {
 			syslog(LOG_ERR, "latency target %s is not an IPv4 address", cfg_targets[i]);
 			return false;
 		}
+	gw_ping = cfg_gw_ping && inet_pton(AF_INET, cfg_host, &ping_addr[GW_TARGET]) == 1;
+	if (cfg_gw_ping && !gw_ping)
+		syslog(LOG_NOTICE, "Huawei host %s is not an IPv4 address: not pinging it", cfg_host);
+	if (!cfg_latency && !gw_ping)
+		return false;
 	icmp_fd.fd = socket(AF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP);
 	if (icmp_fd.fd < 0) {
 		syslog(LOG_ERR, "ICMP socket: %s (latency disabled)", strerror(errno));
@@ -1459,6 +1558,14 @@ static void add_sample(struct blob_buf *buf, const char *name, const struct samp
 			blobmsg_add_u32(buf, "rtt_min", s->rtt_min);
 			blobmsg_add_u32(buf, "rtt_avg", s->rtt_avg);
 			blobmsg_add_u32(buf, "rtt_max", s->rtt_max);
+		}
+	}
+	if (s->gw_sent) {
+		blobmsg_add_u32(buf, "gw_sent", s->gw_sent);
+		blobmsg_add_u32(buf, "gw_lost", s->gw_lost);
+		if (s->gw_lost < s->gw_sent) {
+			blobmsg_add_u32(buf, "gw_rtt_avg", s->gw_rtt_avg);
+			blobmsg_add_u32(buf, "gw_rtt_max", s->gw_rtt_max);
 		}
 	}
 	blobmsg_close_table(buf, t);
@@ -1607,9 +1714,10 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 		blobmsg_add_u8(&b, "enabled", cfg_latency && icmp_fd.fd >= 0);
 		blobmsg_add_u32(&b, "interval", PING_GAP_MS / 1000);
 		a = blobmsg_open_array(&b, "targets");
-		for (i = 0; i < cfg_ntargets; i++)
+		for (i = 0; cfg_latency && i < cfg_ntargets; i++)
 			blobmsg_add_string(&b, NULL, cfg_targets[i]);
 		blobmsg_close_array(&b, a);
+		blobmsg_add_u8(&b, "huawei", gw_ping && icmp_fd.fd >= 0);
 		blobmsg_close_table(&b, t);
 	}
 	if (cfg_flash_dir || flash_error[0]) {
@@ -1691,9 +1799,9 @@ static void usage(const char *prog)
 		"  -H host      Huawei router IPv4 address (default 192.168.0.1)\n"
 		"  -P port      HTTP port (default 80)\n"
 		"  -i seconds   sampling interval (default 60)\n"
-		"  -n samples   fine history size (default 4320, 40 bytes each)\n"
+		"  -n samples   fine history size (default 4320, 72 bytes each)\n"
 		"  -c seconds   coarse tier interval (default 3600, 0 disables it)\n"
-		"  -N samples   coarse history size (default 8760, 40 bytes each)\n"
+		"  -N samples   coarse history size (default 8760, 72 bytes each)\n"
 		"  -f file      fine history file: loaded at start, saved on exit\n"
 		"  -F file      coarse history file (default: <fine file>.coarse)\n"
 		"  -S seconds   also save the history files this often (default: exit only)\n"
@@ -1701,6 +1809,7 @@ static void usage(const char *prog)
 		"  -E seconds   append to the flash history this often (default 86400)\n"
 		"  -G           don't read signal quality and connection status\n"
 		"  -L           don't measure internet latency\n"
+		"  -g           don't measure latency to the Huawei itself (the local link)\n"
 		"  -T address   latency target (repeatable, up to 4; default 1.1.1.1 and 8.8.8.8)\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
@@ -1712,7 +1821,7 @@ int main(int argc, char **argv)
 
 	static char coarse_default[PATH_MAX];
 
-	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:LT:h")) != -1) {
+	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:LgT:h")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'P': cfg_port = optarg; break;
@@ -1726,6 +1835,7 @@ int main(int argc, char **argv)
 		case 's': cfg_socket = optarg; break;
 		case 'G': cfg_signal = false; break;
 		case 'L': cfg_latency = false; break;
+		case 'g': cfg_gw_ping = false; break;
 		case 'T': {
 			static bool custom;
 
@@ -1780,8 +1890,8 @@ int main(int argc, char **argv)
 
 	sample_timer.cb = sample_timer_cb;
 	uloop_timeout_set(&sample_timer, 1000);
-	if (cfg_latency && !ping_open())
-		cfg_latency = false;
+	if ((cfg_latency || cfg_gw_ping) && !ping_open())
+		cfg_latency = gw_ping = false;
 	if (cfg_flash_dir) {
 		flash_timer.cb = flash_timer_cb;
 		uloop_timeout_set(&flash_timer, cfg_flash_every * 1000);

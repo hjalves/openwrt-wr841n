@@ -6,7 +6,7 @@ Custom firmware, software and notes for a TP-Link TL-WR841N v9 running OpenWrt 1
 
 | Path | What it is |
 |---|---|
-| [`huawei-trafficd/`](huawei-trafficd/README.md) | Daemon that records the Huawei's download/upload/session counters, LTE signal quality and connection state, internet latency and packet loss, plus the `traffic.html` dashboard (usage, signal, connection log) and the `query.py` client |
+| [`huawei-trafficd/`](huawei-trafficd/README.md) | Daemon that records the Huawei's download/upload/session counters, LTE signal quality and connection state, internet latency and packet loss, latency and loss over the powerline to the Huawei, plus the `traffic.html` dashboard (usage, signal, connection log) and the `query.py` client |
 | [`www/`](www/README.md) | Landing page for the router (`http://192.168.0.254/`), linking to the admin page, the dashboard and the device list |
 | [`firmware/`](firmware/README.md) | LuCI-free firmware image for this router (Image Builder): no LuCI/Lua, IPv6, PPP or dnsmasq; our programs built in; 1088 KiB writable flash instead of 576 KiB. **Running on the router since 2026-11-16** |
 | [`admin/`](admin/README.md) | Admin page without Lua (`admin.html`): status, Wi-Fi, LAN, system, services, log, backup, firmware. Talks only to `/ubus`; meant to replace LuCI in a LuCI-free firmware |
