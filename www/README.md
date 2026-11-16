@@ -8,6 +8,17 @@
 
 It is a single 5 KiB file with no external resources, styled like the traffic dashboard, with light and dark mode following the device setting.
 
+## Icons
+
+All three pages (this one, `traffic.html` and `devices.html`) use the same icon: white signal bars on a blue (`#2a78d6`) rounded square.
+
+| File | Size | Used by |
+|---|---|---|
+| `favicon.svg` | 335 B | Browser tabs in Chrome, Firefox and Edge (sharp at any size) |
+| `favicon-32.png` | 419 B | Browsers without SVG icon support, such as Safari |
+
+The PNG was rendered from the SVG with headless Chromium. There's no `apple-touch-icon.png`: it only matters for iOS home-screen shortcuts and Safari's Favourites grid.
+
 ## `cgi-bin/routerinfo`
 
 A read-only shell script that the router's web server (uhttpd) runs as a CGI at `/cgi-bin/routerinfo`. It returns:
@@ -27,8 +38,8 @@ It reads no input (any query string is ignored), so there's nothing to inject, a
 From the workspace root (see [`../router-ssh/README.md`](../router-ssh/README.md)):
 
 ```sh
-./router-ssh/copy www/index.html www/cgi-bin/routerinfo router:/tmp/
-./router-ssh/connect 'cp /tmp/index.html /www/index.html && cp /tmp/routerinfo /www/cgi-bin/routerinfo && chmod 755 /www/cgi-bin/routerinfo && rm /tmp/index.html /tmp/routerinfo'
+./router-ssh/copy www/index.html www/cgi-bin/routerinfo www/favicon.svg www/favicon-32.png router:/tmp/
+./router-ssh/connect 'cd /tmp && cp index.html favicon.svg favicon-32.png /www/ && cp routerinfo /www/cgi-bin/routerinfo && chmod 755 /www/cgi-bin/routerinfo && rm index.html routerinfo favicon.svg favicon-32.png'
 ```
 
 ## Restore the original redirect
@@ -36,5 +47,5 @@ From the workspace root (see [`../router-ssh/README.md`](../router-ssh/README.md
 The firmware's original page is still in the read-only root filesystem at `/rom/www/index.html`:
 
 ```sh
-./router-ssh/connect 'cp /rom/www/index.html /www/index.html; rm -f /www/cgi-bin/routerinfo'
+./router-ssh/connect 'cp /rom/www/index.html /www/index.html; rm -f /www/cgi-bin/routerinfo /www/favicon.svg /www/favicon-32.png'
 ```
