@@ -1,0 +1,10 @@
+#!/bin/sh
+# First boot of the router-experiments firmware (also after a sysupgrade that kept settings).
+# This image has no IPv6: stop the firewall and uhttpd from trying to use it, since the
+# kept configuration still asks for it.
+uci -q set firewall.@defaults[0].disable_ipv6=1 && uci commit firewall
+for o in listen_http listen_https; do
+	for v in '[::]:80' '[::]:443'; do uci -q del_list uhttpd.main.$o="$v"; done
+done
+uci commit uhttpd
+exit 0

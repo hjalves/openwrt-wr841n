@@ -485,8 +485,9 @@ async function viewWifi(v) {
 
 /* ---------- Network ---------- */
 async function viewNetwork(v) {
-  const [net, dhcp, st] = await Promise.all([call("uci", "get", {config: "network"}), call("uci", "get", {config: "dhcp"}).catch(() => ({})),
-    call("network.interface.lan", "status").catch(() => null)]);
+  const [net, dhcp, st, hasDnsmasq] = await Promise.all([call("uci", "get", {config: "network"}), call("uci", "get", {config: "dhcp"}).catch(() => ({})),
+    call("network.interface.lan", "status").catch(() => null),
+    call("file", "stat", {path: "/etc/init.d/dnsmasq"}).then(() => true, () => false)]);
   const devst = st && st.l3_device ? await call("network.device", "status", {name: st.l3_device}).catch(() => null) : null;
   const lan = (net.values || {}).lan;
   if (!lan) { v.append(card("Network", el("p", {text: "There's no LAN interface in the configuration."}))); return; }
@@ -530,7 +531,7 @@ async function viewNetwork(v) {
     field("Gateway", gw),
     field("DNS servers", dns, "Separated by spaces. Used by the router itself."),
     el("div", {class: "row"}, el("span", {class: "lbl", text: "DHCP server"}),
-      el("div", {style: "padding-top:7px"}, dl.ignore == "1" ? "Off: another router hands out addresses." : "On")),
+      el("div", {style: "padding-top:7px"}, !hasDnsmasq ? "Not installed: another router hands out addresses." : dl.ignore == "1" ? "Off: another router hands out addresses." : "On")),
     err, el("div", {class: "btns"}, save),
     el("p", {class: "hint", text: `After saving you have ${ROLLBACK_SECS} seconds to confirm, otherwise the previous settings come back.`})), live));
 }
@@ -671,7 +672,7 @@ async function viewSystem(v) {
       field("Hostname", host, "Also its name on the network: " + (s.hostname || "openwrt").toLowerCase() + ".local"),
       field("Time zone", zone, el("span", null, `Router time: ${rtime}. `, useMine)),
       err1, el("div", {class: "btns"}, save1)),
-    card("Password", el("p", {class: "hint", text: "The root password, used for this page, LuCI and SSH."}),
+    card("Password", el("p", {class: "hint", text: "The root password, used for this page and SSH (and LuCI, where installed)."}),
       field("New password", p1), field("Repeat it", p2), err2, el("div", {class: "btns"}, save2))),
     card("Services", svcBox),
     card("Processes", el("div", {class: "inline", style: "margin-bottom:10px"}, pfilt, el("label", {class: "check", style: "padding:0"}, kthreads, "Kernel threads"), prefresh),
@@ -764,7 +765,7 @@ async function viewMaintenance(v) {
       flash.onclick = async () => {
         if (!await confirmAct("Flash this firmware?", [
           "Don't unplug the router while it's flashing: that can leave it unable to start. It takes a few minutes.",
-          keep.checked ? "Settings are kept. Programs installed after the original firmware (huawei-trafficd, lanwatch, tinymdns, this page) are removed unless the new firmware includes them."
+          keep.checked ? "Settings are kept. Programs added after the current firmware was flashed are removed, unless the new firmware includes them."
             : "All settings are erased: the router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Flash", "danger")) return;
         await call("rpc-sys", "upgrade_start", {keep: keep.checked});
         waitForRouter("Flashing firmware", "Don't unplug the router. This page reloads when it's back" + (keep.checked ? "." : " (if it comes back at this address)."), 300);
@@ -779,7 +780,7 @@ async function viewMaintenance(v) {
   // Factory reset
   const reset = el("button", {class: "danger", text: "Reset to factory settings…"});
   reset.onclick = async () => {
-    if (!await confirmAct("Erase all settings?", ["Everything changed since the firmware was installed is erased: settings, passwords and installed programs (huawei-trafficd, lanwatch, tinymdns, this page).",
+    if (!await confirmAct("Erase all settings?", ["Everything changed since the firmware was flashed is erased: settings, passwords and any programs added afterwards. Programs built into the firmware stay.",
       "The router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Erase everything", "danger")) return;
     try { await call("rpc-sys", "factory"); } catch (e) { toast(e.message); return; }
     waitForRouter("Resetting", "The router is erasing its settings and restarting. It will come back at 192.168.1.1, not here.", 180);
@@ -790,7 +791,7 @@ async function viewMaintenance(v) {
     pair(card("Firmware upgrade", el("p", {class: "hint", text: "Use the “sysupgrade” image for this exact model. It's checked before anything is written." +
         (ri ? ` Free memory: ${fmtMB(ri.mem_available_kb * 1024)}.` : "")}),
       field("Firmware file", ffile), prog, ferr, el("div", {class: "btns"}, fbtn), fout),
-    card("Factory reset", el("p", {class: "hint", text: "Erases all settings and installed programs."}), el("div", {class: "btns"}, reset))));
+    card("Factory reset", el("p", {class: "hint", text: "Erases all settings, and programs added after the firmware was flashed."}), el("div", {class: "btns"}, reset))));
 }
 
 /* ---------- routing ---------- */

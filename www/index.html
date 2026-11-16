@@ -50,7 +50,7 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <div class="live" id="liveDev"></div>
     </a>
   </nav>
-  <p class="foot">Classic admin interface: <a href="/cgi-bin/luci">LuCI</a> (firewall and everything else)</p>
+  <p class="foot" id="luci" hidden>Classic admin interface: <a href="/cgi-bin/luci">LuCI</a> (firewall and everything else)</p>
 </main>
 <script>
 "use strict";
@@ -70,6 +70,8 @@ document.getElementById("host").textContent = location.host;
       `This session: ${gb(s.download)} down · ${gb(s.upload)} up · connected ${d ? d + "d " : ""}${h}h`;
   } catch (e) { /* summary is optional */ }
 })();
+// The LuCI link only where LuCI is installed (the LuCI-free firmware has none).
+fetch("/cgi-bin/luci", {method: "HEAD", cache: "no-store"}).then(r => { if (r.status != 404) document.getElementById("luci").hidden = false; }).catch(() => {});
 // Uptime, memory and flash from /cgi-bin/routerinfo; stays empty if unavailable.
 (async () => {
   try {
