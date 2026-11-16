@@ -25,7 +25,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -45,7 +47,7 @@
 #define QUERY_DEFAULT_MAX 1000
 #define QUERY_HARD_MAX    4000        /* keeps replies well under ubus' 1 MiB */
 #define STATE_MAGIC       0x48545246u /* "HTRF" */
-#define STATE_VERSION     3u          /* v3: 56-byte samples with signal; v1/v2 still load */
+#define STATE_VERSION     4u          /* v4: 64-byte samples with latency; v1-v3 still load */
 #define SIG_NONE          (-128)      /* unknown rsrq/sinr/rssi */
 #define RSRP_NONE         INT16_MIN   /* unknown rsrp */
 #define NET_NONE          255         /* unknown network type */
@@ -67,11 +69,26 @@ struct sample {
 	int8_t rsrq, sinr, rssi;/* dB, dB, dBm */
 	uint8_t net_type;       /* CurrentNetworkType, 19 = LTE */
 	uint8_t sig_n;          /* signal readings behind rsrp..rssi; 0 = none */
-	uint8_t reserved[3];
+	/* Internet latency (ICMP echo to the targets) during the period. */
+	uint8_t ping_ok;        /* bitmask of targets that answered at least once */
+	uint16_t ping_sent;     /* probes resolved in this period; 0 = no data */
+	uint16_t ping_lost;     /* ... of which got no reply */
+	uint16_t rtt_min, rtt_avg, rtt_max;  /* ms, over the replies */
 };
 
 /* State files store samples as raw structs: the size must not change silently. */
-typedef char sample_is_56_bytes[sizeof(struct sample) == 56 ? 1 : -1];
+typedef char sample_is_64_bytes[sizeof(struct sample) == 64 ? 1 : -1];
+
+/* The 56-byte sample of state file version 3 (signal, no latency). */
+struct sample_v3 {
+	uint32_t time, uptime;
+	uint64_t download, upload, total_download, total_upload;
+	uint32_t cell_id;
+	uint16_t conn_status;
+	int16_t rsrp;
+	int8_t rsrq, sinr, rssi;
+	uint8_t net_type, sig_n, reserved[3];
+};
 
 /* The 40-byte sample of state file versions 1 and 2. */
 struct sample_v2 {
@@ -87,7 +104,9 @@ static void sample_clear_signal(struct sample *s)
 	s->rsrq = s->sinr = s->rssi = SIG_NONE;
 	s->net_type = NET_NONE;
 	s->sig_n = 0;
-	memset(s->reserved, 0, sizeof(s->reserved));
+	s->ping_ok = 0;
+	s->ping_sent = s->ping_lost = 0;
+	s->rtt_min = s->rtt_avg = s->rtt_max = 0;
 }
 
 /* ---- configuration ---- */
@@ -95,6 +114,10 @@ static const char *cfg_host = "192.168.0.1";
 static const char *cfg_port = "80";
 static const char *cfg_socket;     /* ubus socket, NULL = default */
 static bool cfg_signal = true;     /* also read device/signal + monitoring/status */
+static bool cfg_latency = true;    /* ICMP echo to the latency targets */
+#define PING_MAX_TARGETS 4
+static const char *cfg_targets[PING_MAX_TARGETS] = { "1.1.1.1", "8.8.8.8" };
+static unsigned cfg_ntargets = 2;
 static unsigned cfg_save_every;    /* seconds, 0 = only on exit */
 static const char *cfg_flash_dir;  /* hourly history log on flash; NULL = off */
 static unsigned cfg_flash_every = 86400;
@@ -152,6 +175,9 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 	long rsrp = 0, rsrq = 0, sinr = 0, rssi = 0;
 	uint8_t net = c->net_type;  /* the type at the start of the period */
 	unsigned n = 0, i;
+	uint32_t p_sent = 0, p_lost = 0, p_rtt_w = 0, p_replies = 0;
+	uint16_t p_min = 0, p_max = 0;
+	uint8_t p_ok = 0;
 
 	for (i = fine.count; i-- > 0;) {
 		const struct sample *f = ring_at(&fine, i);
@@ -164,6 +190,21 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 			c->conn_status = f->conn_status;
 		if (f->net_type != NET_NONE && f->net_type != net)
 			c->net_type = f->net_type;  /* any other type seen sticks */
+		if (f->ping_sent) {
+			unsigned r = f->ping_sent > f->ping_lost ? f->ping_sent - f->ping_lost : 0;
+
+			p_sent += f->ping_sent;
+			p_lost += f->ping_lost;
+			p_ok |= f->ping_ok;
+			if (r) {
+				p_rtt_w += (uint32_t)f->rtt_avg * r;
+				p_replies += r;
+				if (!p_min || f->rtt_min < p_min)
+					p_min = f->rtt_min;
+				if (f->rtt_max > p_max)
+					p_max = f->rtt_max;
+			}
+		}
 		if (!f->sig_n || f->rsrp == RSRP_NONE)
 			continue;
 		rsrp += f->rsrp;
@@ -171,6 +212,14 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 		sinr += f->sinr;
 		rssi += f->rssi;
 		n++;
+	}
+	if (p_sent) {  /* latency over the period: totals, weighted average, extremes */
+		c->ping_sent = p_sent > 65535 ? 65535 : (uint16_t)p_sent;
+		c->ping_lost = p_lost > 65535 ? 65535 : (uint16_t)p_lost;
+		c->ping_ok = p_ok;
+		c->rtt_avg = p_replies ? (uint16_t)((p_rtt_w + p_replies / 2) / p_replies) : 0;
+		c->rtt_min = p_min;
+		c->rtt_max = p_max;
 	}
 	if (!n)
 		return;
@@ -267,9 +316,29 @@ static void ring_load(struct ring *r)
 		syslog(LOG_NOTICE, "%s was recorded at %us intervals, now %us",
 		       r->state, hdr[3], r->interval);
 	for (i = 0; i < hdr[2]; i++) {
-		if (hdr[1] >= 3) {
+		if (hdr[1] >= 4) {
 			if (fread(&s, sizeof(s), 1, f) != 1)
 				break;
+		} else if (hdr[1] == 3) {  /* 56-byte samples: signal, no latency */
+			struct sample_v3 o;
+
+			if (fread(&o, sizeof(o), 1, f) != 1)
+				break;
+			sample_clear_signal(&s);
+			s.time = o.time;
+			s.uptime = o.uptime;
+			s.download = o.download;
+			s.upload = o.upload;
+			s.total_download = o.total_download;
+			s.total_upload = o.total_upload;
+			s.cell_id = o.cell_id;
+			s.conn_status = o.conn_status;
+			s.rsrp = o.rsrp;
+			s.rsrq = o.rsrq;
+			s.sinr = o.sinr;
+			s.rssi = o.rssi;
+			s.net_type = o.net_type;
+			s.sig_n = o.sig_n;
 		} else {  /* older 40-byte samples: no signal data */
 			struct sample_v2 o;
 
@@ -311,9 +380,10 @@ static void ring_load(struct ring *r)
 #define FLASH_MIN_FREE   (64 * 1024)  /* never fill the overlay past this */
 #define BLOCK_HDR        12
 #define BLOCK_MAX        255          /* records per block */
-#define REC_MAX          64           /* worst-case encoded record size */
+#define REC_MAX          96           /* worst case: 1 + 6x10 + 5 + 9 + 16 = 91 bytes */
 #define F_SIG            1
 #define F_META           2
+#define F_PING           4
 #define TMPFS_MAGIC_     0x01021994
 #define RAMFS_MAGIC_     0x858458f6
 
@@ -404,7 +474,7 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 	int64_t dt = (int64_t)b->time - a->time;
 	size_t n = 0;
 
-	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0);
+	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0) | (b->ping_sent ? F_PING : 0);
 	n += put_sv(p + n, dt);
 	n += put_sv(p + n, (int64_t)b->uptime - a->uptime - dt);
 	n += put_sv(p + n, (int64_t)(b->download - a->download));
@@ -422,6 +492,14 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 		n += put_uv(p + n, b->cell_id);
 		n += put_uv(p + n, b->conn_status);
 		p[n++] = b->net_type;
+	}
+	if (b->ping_sent) {
+		n += put_uv(p + n, b->ping_sent);
+		n += put_uv(p + n, b->ping_lost);
+		n += put_uv(p + n, b->rtt_min);
+		n += put_uv(p + n, b->rtt_avg);
+		n += put_uv(p + n, b->rtt_max);
+		p[n++] = b->ping_ok;
 	}
 	return n;
 }
@@ -449,6 +527,8 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 	b->rsrp = RSRP_NONE;
 	b->rsrq = b->sinr = b->rssi = SIG_NONE;
 	b->sig_n = 0;
+	b->ping_ok = 0;
+	b->ping_sent = b->ping_lost = b->rtt_min = b->rtt_avg = b->rtt_max = 0;
 	if (f & F_SIG) {
 		if (end - *p < 5)
 			return false;
@@ -465,6 +545,22 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 		b->cell_id = (uint32_t)cell;
 		b->conn_status = (uint16_t)conn;
 		b->net_type = *(*p)++;
+	}
+	if (f & F_PING) {
+		uint64_t v[5];
+		int k;
+
+		for (k = 0; k < 5; k++)
+			if (!get_uv(p, end, &v[k]) || v[k] > 65535)
+				return false;
+		if (*p >= end)
+			return false;
+		b->ping_sent = (uint16_t)v[0];
+		b->ping_lost = (uint16_t)v[1];
+		b->rtt_min = (uint16_t)v[2];
+		b->rtt_avg = (uint16_t)v[3];
+		b->rtt_max = (uint16_t)v[4];
+		b->ping_ok = *(*p)++;
 	}
 	return true;
 }
@@ -823,6 +919,7 @@ static void http_close(void)
 }
 
 static void finish_sample(void);
+static void ping_attach(struct sample *s);
 
 static void sample_failed(const char *fmt, ...)
 {
@@ -898,6 +995,7 @@ static void finish_sample(void)
 	http_close();
 	http.busy = false;
 	http.have_pending = false;
+	ping_attach(&http.pending);
 	record_sample(&http.pending);
 	last_success = http.pending.time;
 	if (failures)
@@ -1102,6 +1200,208 @@ static void http_start(void)
 	uloop_timeout_set(&http.timeout, HTTP_TIMEOUT_MS);
 }
 
+/* ------------------------------------------------------------------ */
+/* Internet latency: one ICMP echo every 10 s, alternating targets     */
+/* ------------------------------------------------------------------ */
+
+#ifndef PING_GAP_MS
+#define PING_GAP_MS      10000  /* tests build with a shorter gap */
+#endif
+#define PING_TIMEOUT_MS  3000
+#define PING_SLOTS       8
+#ifndef SOL_RAW
+#define SOL_RAW 255
+#endif
+#define ICMP_FILTER_OPT  1          /* linux/icmp.h ICMP_FILTER */
+
+static struct uloop_fd icmp_fd = { .fd = -1 };
+static struct uloop_timeout ping_timer;
+static struct in_addr ping_addr[PING_MAX_TARGETS];
+static uint16_t ping_id, ping_seq;
+static unsigned ping_next;
+static struct {
+	bool used;
+	uint8_t target;
+	uint16_t seq;
+	uint64_t sent_us;
+} ping_slot[PING_SLOTS];
+static struct {                     /* results since the last sample */
+	uint16_t sent, lost, min, max;
+	uint32_t rtt_sum, replies;
+	uint8_t ok;
+} pacc;
+
+static uint64_t mono_us(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static uint16_t inet_csum(const uint8_t *p, size_t n)
+{
+	uint32_t sum = 0;
+
+	for (; n > 1; p += 2, n -= 2)
+		sum += (uint32_t)(p[0] << 8 | p[1]);
+	if (n)
+		sum += (uint32_t)p[0] << 8;
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+	return (uint16_t)~sum;
+}
+
+/* A probe finished: replied (rtt_us >= 0) or timed out (rtt_us < 0). */
+static void ping_resolve(unsigned slot, int64_t rtt_us)
+{
+	ping_slot[slot].used = false;
+	if (pacc.sent < 65535)
+		pacc.sent++;
+	if (rtt_us < 0) {
+		if (pacc.lost < 65535)
+			pacc.lost++;
+		return;
+	}
+	{
+		uint32_t ms = (uint32_t)((rtt_us + 500) / 1000);
+		uint16_t m = ms > 65535 ? 65535 : (uint16_t)(ms ? ms : 1);  /* 0 means "none" */
+
+		pacc.rtt_sum += m;
+		pacc.replies++;
+		if (!pacc.min || m < pacc.min)
+			pacc.min = m;
+		if (m > pacc.max)
+			pacc.max = m;
+		pacc.ok |= (uint8_t)(1u << ping_slot[slot].target);
+	}
+}
+
+/* Move the results gathered since the last sample into s. */
+static void ping_attach(struct sample *s)
+{
+	if (!cfg_latency || !pacc.sent)
+		return;
+	s->ping_sent = pacc.sent;
+	s->ping_lost = pacc.lost;
+	s->ping_ok = pacc.ok;
+	s->rtt_min = pacc.min;
+	s->rtt_max = pacc.max;
+	s->rtt_avg = pacc.replies ? (uint16_t)((pacc.rtt_sum + pacc.replies / 2) / pacc.replies) : 0;
+	memset(&pacc, 0, sizeof(pacc));
+}
+
+static void icmp_cb(struct uloop_fd *fd, unsigned int events)
+{
+	uint8_t buf[256];
+	struct sockaddr_in from;
+	socklen_t fl;
+	ssize_t n;
+	uint64_t now = mono_us();
+
+	(void)events;
+	for (;;) {
+		size_t ihl;
+		const uint8_t *icmp;
+		uint16_t id, seq;
+		unsigned k;
+
+		fl = sizeof(from);
+		n = recvfrom(fd->fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+		if (n < 0)
+			return;
+		if (n < 20 || (buf[0] >> 4) != 4)
+			continue;
+		ihl = (size_t)(buf[0] & 0x0f) * 4;
+		if (ihl < 20 || (size_t)n < ihl + 8)
+			continue;
+		icmp = buf + ihl;
+		if (icmp[0] != 0 || icmp[1] != 0)
+			continue;  /* echo reply only */
+		id = (uint16_t)(icmp[4] << 8 | icmp[5]);
+		seq = (uint16_t)(icmp[6] << 8 | icmp[7]);
+		if (id != ping_id)
+			continue;  /* someone else's ping */
+		for (k = 0; k < PING_SLOTS; k++)
+			if (ping_slot[k].used && ping_slot[k].seq == seq &&
+			    ping_addr[ping_slot[k].target].s_addr == from.sin_addr.s_addr) {
+				ping_resolve(k, (int64_t)(now - ping_slot[k].sent_us));
+				break;
+			}
+	}
+}
+
+static void ping_timer_cb(struct uloop_timeout *t)
+{
+	uint8_t pkt[24];
+	struct sockaddr_in to;
+	uint64_t now = mono_us();
+	unsigned k, slot = PING_SLOTS, target;
+	uint16_t c;
+
+	uloop_timeout_set(t, PING_GAP_MS);
+	for (k = 0; k < PING_SLOTS; k++)  /* unanswered for too long: lost */
+		if (ping_slot[k].used && now - ping_slot[k].sent_us >= PING_TIMEOUT_MS * 1000u)
+			ping_resolve(k, -1);
+	for (k = 0; k < PING_SLOTS && slot == PING_SLOTS; k++)
+		if (!ping_slot[k].used)
+			slot = k;
+	if (slot == PING_SLOTS || icmp_fd.fd < 0)
+		return;
+	target = ping_next++ % cfg_ntargets;
+	memset(pkt, 0, sizeof(pkt));
+	pkt[0] = 8;  /* echo request */
+	pkt[4] = (uint8_t)(ping_id >> 8);
+	pkt[5] = (uint8_t)ping_id;
+	ping_seq++;
+	pkt[6] = (uint8_t)(ping_seq >> 8);
+	pkt[7] = (uint8_t)ping_seq;
+	memcpy(pkt + 8, "huawei-trafficd", 15);
+	c = inet_csum(pkt, sizeof(pkt));
+	pkt[2] = (uint8_t)(c >> 8);
+	pkt[3] = (uint8_t)c;
+	memset(&to, 0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_addr = ping_addr[target];
+	if (sendto(icmp_fd.fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
+		/* No route (e.g. LTE down): a probe that can't leave is a lost probe. */
+		if (pacc.sent < 65535)
+			pacc.sent++;
+		if (pacc.lost < 65535)
+			pacc.lost++;
+		return;
+	}
+	ping_slot[slot].used = true;
+	ping_slot[slot].target = (uint8_t)target;
+	ping_slot[slot].seq = ping_seq;
+	ping_slot[slot].sent_us = now;
+}
+
+static bool ping_open(void)
+{
+	uint32_t filter = ~(1u << 0);  /* deliver only type 0, echo reply */
+	unsigned i;
+
+	for (i = 0; i < cfg_ntargets; i++)
+		if (inet_pton(AF_INET, cfg_targets[i], &ping_addr[i]) != 1) {
+			syslog(LOG_ERR, "latency target %s is not an IPv4 address", cfg_targets[i]);
+			return false;
+		}
+	icmp_fd.fd = socket(AF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP);
+	if (icmp_fd.fd < 0) {
+		syslog(LOG_ERR, "ICMP socket: %s (latency disabled)", strerror(errno));
+		return false;
+	}
+	if (setsockopt(icmp_fd.fd, SOL_RAW, ICMP_FILTER_OPT, &filter, sizeof(filter)) < 0)
+		syslog(LOG_NOTICE, "ICMP filter not available: %s", strerror(errno));
+	ping_id = (uint16_t)(getpid() ^ 0x4854);
+	icmp_fd.cb = icmp_cb;
+	uloop_fd_add(&icmp_fd, ULOOP_READ);
+	ping_timer.cb = ping_timer_cb;
+	uloop_timeout_set(&ping_timer, 2500);  /* first probe soon after start */
+	return true;
+}
+
 static struct uloop_timeout sample_timer;
 
 static void sample_timer_cb(struct uloop_timeout *t)
@@ -1151,6 +1451,16 @@ static void add_sample(struct blob_buf *buf, const char *name, const struct samp
 		blobmsg_add_u32(buf, "conn_status", s->conn_status);
 	if (s->net_type != NET_NONE)
 		blobmsg_add_u32(buf, "net_type", s->net_type);
+	if (s->ping_sent) {
+		blobmsg_add_u32(buf, "ping_sent", s->ping_sent);
+		blobmsg_add_u32(buf, "ping_lost", s->ping_lost);
+		blobmsg_add_u32(buf, "ping_ok", s->ping_ok);
+		if (s->ping_lost < s->ping_sent) {
+			blobmsg_add_u32(buf, "rtt_min", s->rtt_min);
+			blobmsg_add_u32(buf, "rtt_avg", s->rtt_avg);
+			blobmsg_add_u32(buf, "rtt_max", s->rtt_max);
+		}
+	}
 	blobmsg_close_table(buf, t);
 }
 
@@ -1290,6 +1600,18 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	if (last_error[0])
 		blobmsg_add_string(&b, "last_error", last_error);
 	blobmsg_add_u8(&b, "signal", cfg_signal);
+	{
+		void *t = blobmsg_open_table(&b, "latency"), *a;
+		unsigned i;
+
+		blobmsg_add_u8(&b, "enabled", cfg_latency && icmp_fd.fd >= 0);
+		blobmsg_add_u32(&b, "interval", PING_GAP_MS / 1000);
+		a = blobmsg_open_array(&b, "targets");
+		for (i = 0; i < cfg_ntargets; i++)
+			blobmsg_add_string(&b, NULL, cfg_targets[i]);
+		blobmsg_close_array(&b, a);
+		blobmsg_close_table(&b, t);
+	}
 	if (cfg_flash_dir || flash_error[0]) {
 		void *t = blobmsg_open_table(&b, "flash");
 		unsigned months[64], n = cfg_flash_dir ? flash_months(months, 64) : 0, i;
@@ -1378,6 +1700,8 @@ static void usage(const char *prog)
 		"  -D dir       keep the hourly history on flash in dir (compressed, monthly files)\n"
 		"  -E seconds   append to the flash history this often (default 86400)\n"
 		"  -G           don't read signal quality and connection status\n"
+		"  -L           don't measure internet latency\n"
+		"  -T address   latency target (repeatable, up to 4; default 1.1.1.1 and 8.8.8.8)\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
 }
@@ -1388,7 +1712,7 @@ int main(int argc, char **argv)
 
 	static char coarse_default[PATH_MAX];
 
-	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:h")) != -1) {
+	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:LT:h")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'P': cfg_port = optarg; break;
@@ -1401,6 +1725,21 @@ int main(int argc, char **argv)
 		case 'S': cfg_save_every = parse_uint(optarg, "save interval", 60, 604800); break;
 		case 's': cfg_socket = optarg; break;
 		case 'G': cfg_signal = false; break;
+		case 'L': cfg_latency = false; break;
+		case 'T': {
+			static bool custom;
+
+			if (!custom) {  /* the first -T replaces the defaults */
+				custom = true;
+				cfg_ntargets = 0;
+			}
+			if (cfg_ntargets == PING_MAX_TARGETS) {
+				fprintf(stderr, "at most %d latency targets\n", PING_MAX_TARGETS);
+				return 2;
+			}
+			cfg_targets[cfg_ntargets++] = optarg;
+			break;
+		}
 		case 'D': cfg_flash_dir = *optarg ? optarg : NULL; break;
 		case 'E': cfg_flash_every = parse_uint(optarg, "flash interval", 300, 30 * 86400); break;
 		default: usage(argv[0]);
@@ -1441,6 +1780,8 @@ int main(int argc, char **argv)
 
 	sample_timer.cb = sample_timer_cb;
 	uloop_timeout_set(&sample_timer, 1000);
+	if (cfg_latency && !ping_open())
+		cfg_latency = false;
 	if (cfg_flash_dir) {
 		flash_timer.cb = flash_timer_cb;
 		uloop_timeout_set(&flash_timer, cfg_flash_every * 1000);

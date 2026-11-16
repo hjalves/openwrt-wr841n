@@ -69,6 +69,8 @@ th{color:var(--text-secondary);font-weight:600}
 .chart .line{fill:none;stroke:var(--series-3);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .chart .pt{fill:var(--series-3);stroke:var(--surface-1);stroke-width:2}
 .chart .zone{fill:var(--muted);font-size:10px}
+.chart .range{fill:var(--series-3);fill-opacity:.08}
+.chart .s3{fill:var(--series-3)}
 #cellsLbl{display:inline-flex;align-items:center;gap:6px;margin:0 0 8px;cursor:pointer}#cellsLbl[hidden]{display:none}
 .log{max-height:340px;overflow:auto;border-radius:8px}
 .log table{border:0;border-radius:0}
@@ -76,7 +78,7 @@ th{color:var(--text-secondary);font-weight:600}
 .log td:first-child{white-space:nowrap;color:var(--text-secondary)}
 .log td:nth-child(2){white-space:nowrap;font-weight:600}
 .log td:last-child{color:var(--text-secondary);text-align:left}
-@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tiles.now{grid-template-columns:repeat(2,1fr)}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(3,1fr);gap:8px}.tiles.now{grid-template-columns:repeat(2,1fr)}.tiles.now .tile:last-child:nth-child(odd){grid-column:span 2}.tile{padding:10px}.tile .value{font-size:17px}.tile .label,.tile .sub{font-size:12px}.key{width:8px;height:8px;margin-right:4px}}
 </style>
 </head>
 <body>
@@ -91,6 +93,7 @@ th{color:var(--text-secondary);font-weight:600}
   <div class="tile"><div class="label"><span class="key k1"></span>Session download</div><div class="value" id="tSd">–</div><div class="sub" id="tSdSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k2"></span>Session upload</div><div class="value" id="tSu">–</div><div class="sub" id="tSuSub">&nbsp;</div></div>
   <div class="tile"><div class="label"><span class="key k3"></span>Signal now</div><div class="value" id="tSig">–</div><div class="sub" id="tSigSub">&nbsp;</div></div>
+  <div class="tile"><div class="label"><span class="key k3"></span>Internet now</div><div class="value" id="tNet">–</div><div class="sub" id="tNetSub">&nbsp;</div></div>
 </section>
 
 <nav class="filters" aria-label="Time range">
@@ -130,6 +133,16 @@ th{color:var(--text-secondary);font-weight:600}
   <div class="chart" id="cR" tabindex="0" aria-describedby="kbd"></div>
 </section>
 <section class="card">
+  <h2 id="hL">Internet latency</h2>
+  <p class="note" id="nL">&nbsp;</p>
+  <div class="chart" id="cL" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
+  <h2 id="hP">Packet loss</h2>
+  <p class="note" id="nP">&nbsp;</p>
+  <div class="chart" id="cP" tabindex="0" aria-describedby="kbd"></div>
+</section>
+<section class="card">
   <h2>Connection log</h2>
   <p class="note" id="logSum">&nbsp;</p>
   <label class="note" id="cellsLbl" hidden><input type="checkbox" id="cells"> Show cell changes</label>
@@ -142,7 +155,7 @@ th{color:var(--text-secondary);font-weight:600}
   <span class="hint" id="kbd">Hover a chart, or focus one and use ← → for details.</span>
 </div>
 <table id="tbl" hidden>
-  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th></tr></thead>
+  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th><th>Avg latency</th><th>Packet loss</th></tr></thead>
   <tbody></tbody>
 </table>
 </div>
@@ -158,7 +171,7 @@ const H = 3600, D = 86400;
 const PRESETS = [["1h", H, 60], ["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H],
                  ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
 const BUCKETS = [60, 300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
-const CHARTS = ["cD", "cU", "cS", "cR"];
+const CHARTS = ["cD", "cU", "cS", "cR", "cL", "cP"];
 const CHART_MR = 58;  // right margin, shared so all charts line up; holds zone names
 const PAGE = 1000;  // samples per request; keeps each router reply ~150 KB
 
@@ -289,6 +302,23 @@ function buildBuckets(samples, from, to, b, spacing) {
     x.sw += w; x.sinr += sm.sinr * w; x.rsrp += sm.rsrp * w; x.rsrq += sm.rsrq * w;
   }
   for (const x of bk) for (const k of ["sinr", "rsrp", "rsrq"]) x[k] = x.sw ? x[k] / x.sw : null;
+  // Latency: each sample carries the probes resolved since the previous one.
+  j = 0;
+  for (const x of bk) { x.ps = 0; x.pl = 0; x.rw = 0; x.rr = 0; x.rmin = null; x.rmax = null; }
+  for (const sm of samples) {
+    if (!sm.ping_sent || sm.time < from || sm.time >= to) continue;
+    while (j < bk.length && bk[j].e <= sm.time) j++;
+    if (j >= bk.length) break;
+    if (sm.time < bk[j].t) continue;
+    const x = bk[j], r = sm.ping_sent - sm.ping_lost;
+    x.ps += sm.ping_sent; x.pl += sm.ping_lost;
+    if (r > 0 && sm.rtt_avg != null) {
+      x.rw += sm.rtt_avg * r; x.rr += r;
+      x.rmin = x.rmin == null ? sm.rtt_min : Math.min(x.rmin, sm.rtt_min);
+      x.rmax = x.rmax == null ? sm.rtt_max : Math.max(x.rmax, sm.rtt_max);
+    }
+  }
+  for (const x of bk) { x.lat = x.rr ? x.rw / x.rr : null; x.loss = x.ps ? x.pl / x.ps : null; }
   return {bk, b, totD, totU};
 }
 
@@ -313,6 +343,21 @@ const cellName = c => `${Math.floor(c / 256)}/${c % 256}`;  // eNodeB / sector
 
 function connEvents(samples, from, to, spacing) {
   const ev = [];
+  // Internet outages: runs of samples where probes were sent but no target answered.
+  const down = s => s.ping_sent > 0 && !s.ping_ok;
+  let runStart = null;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (down(s) && runStart == null) runStart = i ? samples[i - 1].time : s.time;
+    if (!down(s) && s.ping_sent > 0 && runStart != null) {
+      if (s.time >= from && runStart <= to)
+        ev.push({t: runStart, kind: "internet", ev: "Internet unreachable",
+                 d: `No reply from any latency target for about ${duration(samples[i - 1].time - runStart || 60)}, while the Huawei was answering.`});
+      runStart = null;
+    }
+  }
+  if (runStart != null && runStart <= to)
+    ev.push({t: runStart, kind: "internet", ev: "Internet unreachable", d: "No reply from any latency target; still ongoing at the latest sample."});
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1], b = samples[i], dt = b.time - a.time;
     if (b.time < from || b.time > to || dt <= 0) continue;
@@ -462,6 +507,70 @@ function drawLine(box, data, k) {
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
+// Average latency per period as a line, with the period's min-max range as a wash.
+function drawLatency(box, data) {
+  box.textContent = "";
+  const W = Math.max(280, box.clientWidth), PH = 130, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
+  const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
+  const avgs = data.bk.map(x => x.lat).filter(v => v != null);
+  const maxs = data.bk.map(x => x.rmax).filter(v => v != null);
+  // One extreme spike shouldn't flatten everything: cap the axis at 3x the highest average.
+  const top0 = Math.max(10, Math.min(Math.max(...maxs, 0), 3 * Math.max(...avgs, 0)) || 10);
+  const ticks = niceTicks(top0), top = ticks[ticks.length - 1];
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `Average internet latency per ${bucketName(data.b)}`}, box);
+  const y = v => MT + PH - Math.min(v, top) / top * PH;
+  for (const t of ticks) {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, `${t} ms`);
+  }
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  data.bk.forEach((x, i) => {  // min-max range
+    if (x.rmin == null) return;
+    const yt = y(x.rmax), yb = y(x.rmin);
+    el("rect", {class: "range", x: ML + i * slot + 1, width: Math.max(1, slot - 2), y: yt, height: Math.max(1, yb - yt), rx: 2}, svg);
+  });
+  let d = "", run = [];
+  const flush = () => { if (run.length === 1) el("circle", {class: "pt", cx: run[0][0], cy: run[0][1], r: 4}, svg); run = []; };
+  data.bk.forEach((x, i) => {
+    if (x.lat == null) { flush(); return; }
+    const p = [ML + i * slot + slot / 2, y(x.lat)];
+    d += (run.length ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1);
+    run.push(p);
+  });
+  flush();
+  if (d) el("path", {class: "line", d}, svg);
+  if (!avgs.length) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
+                       data.bk.some(x => x.ps) ? "No replies in this range" : "No latency measurements in this range");
+  finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
+}
+
+// Packet loss per period as bars on a fixed 0-100 % axis.
+function drawLoss(box, data) {
+  box.textContent = "";
+  const W = Math.max(280, box.clientWidth), PH = 90, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
+  const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `Packet loss per ${bucketName(data.b)}`}, box);
+  const y = v => MT + PH - v * PH;
+  for (const t of [0, 0.5, 1]) {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, `${t * 100} %`);
+  }
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  const bw = Math.max(1, Math.min(24, slot - 2));
+  let any = false;
+  data.bk.forEach((x, i) => {
+    if (x.loss == null) return;
+    any = true;
+    if (x.loss <= 0) return;
+    const h = Math.max(1, x.loss * PH), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h, r = Math.min(4, bw / 2, h);
+    el("path", {class: "s3", d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
+  });
+  if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg, "No latency measurements in this range");
+  finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
+}
+
 function setHover(i, cx, cy) {
   hoverIdx = i;
   const tip = $("tip");
@@ -476,7 +585,7 @@ function setHover(i, cx, cy) {
   t.className = "t";
   t.textContent = periodLabel(x.t, x.e);
   tip.appendChild(t);
-  if (!x.cov && !x.sw) {
+  if (!x.cov && !x.sw && !x.ps) {
     const r = document.createElement("div");
     r.textContent = "No data";
     tip.appendChild(r);
@@ -500,6 +609,21 @@ function setHover(i, cx, cy) {
       s.textContent = `${SIG[k].name} avg · ${quality(k, x[k])}`;
       r.append(key, v, s);
       tip.appendChild(r);
+    }
+    if (x.ps) {
+      const rows = [[x.lat != null ? `${Math.round(x.lat)} ms` : "–",
+                     x.lat != null ? `latency avg · ${x.rmin}–${x.rmax} ms` : "latency · no replies"],
+                    [`${Math.round(x.loss * 100)} %`, `packet loss · ${x.pl} of ${x.ps} probes`]];
+      for (const [val, label] of rows) {
+        const r = document.createElement("div"), key = document.createElement("i"),
+              v = document.createElement("b"), s = document.createElement("span");
+        r.className = "r";
+        key.style.background = "var(--series-3)";
+        v.textContent = val;
+        s.textContent = label;
+        r.append(key, v, s);
+        tip.appendChild(r);
+      }
     }
     if (x.est) {
       const r = document.createElement("div");
@@ -562,7 +686,25 @@ function renderStatus(st, latest) {
   s.append(document.createTextNode(txt));
 }
 
+function renderNet(x) {
+  const v = $("tNet");
+  v.textContent = "";
+  if (!x || !x.ping_sent) {
+    v.textContent = "–";
+    setText("tNetSub", "no measurement yet");
+    return;
+  }
+  const lossPct = Math.round(100 * x.ping_lost / x.ping_sent), down = !x.ping_ok;
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.style.background = `var(${down ? "--critical" : lossPct ? "--warning" : "--good"})`;
+  v.append(dot, document.createTextNode(down ? "Down" : `${x.rtt_avg} ms`));
+  setText("tNetSub", down ? `no reply from any target · ${x.ping_sent} probes` :
+          `${lossPct ? "Lossy · " : "OK · "}${lossPct} % loss over the last minute`);
+}
+
 function renderLatest(x) {
+  renderNet(x);
   if (!x) return;
   setText("tUp", duration(x.uptime));
   setText("tUpSub", "since " + tFull(x.time - x.uptime));
@@ -615,6 +757,12 @@ function renderRange() {
   setText("nR", "Higher (less negative) is better: received power from the cell, below −100 dBm is poor.");
   drawLine($("cS"), data, "sinr");
   drawLine($("cR"), data, "rsrp");
+  setText("hL", `Internet latency, average per ${per}`);
+  setText("hP", `Packet loss, per ${per}`);
+  setText("nL", "Round-trip time of pings to the internet (lower is better). The light band shows each period's fastest to slowest reply.");
+  setText("nP", "Share of pings that got no reply. 100 % with the Huawei still answering means the internet behind LTE was down.");
+  drawLatency($("cL"), data);
+  drawLoss($("cP"), data);
   renderLog();
   const tb = $("tbl").tBodies[0];
   tb.textContent = "";
@@ -622,7 +770,8 @@ function renderRange() {
     const tr = tb.insertRow();
     const cells = [periodLabel(x.t, x.e)].concat(x.cov
       ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"],
-      x.sw ? [sig("sinr", Math.round(x.sinr)), sig("rsrp", Math.round(x.rsrp))] : ["–", "–"]);
+      x.sw ? [sig("sinr", Math.round(x.sinr)), sig("rsrp", Math.round(x.rsrp))] : ["–", "–"],
+      x.ps ? [x.lat != null ? `${Math.round(x.lat)} ms` : "–", `${Math.round(x.loss * 100)} %`] : ["–", "–"]);
     for (const c of cells) tr.insertCell().textContent = c;
   }
 }
@@ -631,12 +780,13 @@ function renderLog() {
   const ev = connEvents(view.samples, view.from, view.to, view.spacing);
   const counts = {};
   for (const e of ev) counts[e.kind] = (counts[e.kind] || 0) + 1;
-  const names = {session: ["new session", "new sessions"], gap: ["collection gap", "collection gaps"],
+  const names = {internet: ["internet outage", "internet outages"],
+                 session: ["new session", "new sessions"], gap: ["collection gap", "collection gaps"],
                  status: ["status change", "status changes"], net: ["network type change", "network type changes"],
                  cell: ["cell change", "cell changes"]};
   setText("logSum", ev.length ? Object.keys(names).filter(k => counts[k])
     .map(k => `${counts[k]} ${names[k][counts[k] === 1 ? 0 : 1]}`).join(" · ") + " in this range, newest first."
-    : "No reconnects, gaps or changes in this range.");
+    : "No outages, reconnects, gaps or changes in this range.");
   // Cell handovers can be frequent; list them only when few, or on request.
   const nCells = counts.cell || 0;
   if (showCells == null) $("cells").checked = nCells <= 20;
@@ -739,13 +889,15 @@ $("tblBtn").addEventListener("click", () => {
 $("csvBtn").addEventListener("click", () => {
   if (!view) return;
   const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b," +
-                "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type"];
+                "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type," +
+                "ping_sent,ping_lost,ping_ok_mask,rtt_min_ms,rtt_avg_ms,rtt_max_ms"];
   const o = v => v == null ? "" : v;
   for (const s of view.samples)
     if (s.time >= view.from && s.time <= view.to)
       rows.push([s.time, new Date(s.time * 1000).toISOString(), s.uptime, s.download, s.upload,
                  s.total_download, s.total_upload, o(s.rsrp), o(s.rsrq), o(s.sinr), o(s.rssi),
-                 o(s.signal_samples), o(s.cell_id), o(s.conn_status), o(s.net_type)].join(","));
+                 o(s.signal_samples), o(s.cell_id), o(s.conn_status), o(s.net_type),
+                 o(s.ping_sent), o(s.ping_lost), o(s.ping_ok), o(s.rtt_min), o(s.rtt_avg), o(s.rtt_max)].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
   a.download = `lte-usage-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;
