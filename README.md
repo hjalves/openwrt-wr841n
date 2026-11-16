@@ -1,6 +1,6 @@
-# OpenWrt router experiments
+# openwrt-wr841n
 
-Software and notes for a TP-Link TL-WR841N v9 running OpenWrt 15.05.1 (`192.168.0.254`) on the home LAN. Its main job here is to log the data usage of the Huawei B310s-22 LTE router (`192.168.0.1`) that provides the internet connection.
+Custom firmware, software and notes for a TP-Link TL-WR841N v9 running OpenWrt 15.05.1 (`192.168.0.254`) on the home LAN. Its main job here is to log the data usage of the Huawei B310s-22 LTE router (`192.168.0.1`) that provides the internet connection.
 
 ## Layout
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the router-experiments firmware for the TP-Link TL-WR841N/ND v9 with the
+# Builds the openwrt-wr841n firmware for the TP-Link TL-WR841N/ND v9 with the
 # OpenWrt 15.05.1 Image Builder: no LuCI/Lua, no IPv6, no PPP, no dnsmasq; with the
 # admin page, huawei-trafficd, lanwatch and tinymdns built in.
 #   firmware/build.sh [IMAGEBUILDER_DIR]
