@@ -7,7 +7,8 @@ Software and notes for a TP-Link TL-WR841N v9 running OpenWrt 15.05.1 (`192.168.
 | Path | What it is |
 |---|---|
 | [`huawei-trafficd/`](huawei-trafficd/README.md) | Daemon that records the Huawei's download/upload/session counters, LTE signal quality and connection state, internet latency and packet loss, plus the `traffic.html` dashboard (usage, signal, connection log) and the `query.py` client |
-| [`www/`](www/README.md) | Landing page for the router (`http://192.168.0.254/`), linking to LuCI and the dashboard |
+| [`www/`](www/README.md) | Landing page for the router (`http://192.168.0.254/`), linking to the admin page, the dashboard and the device list |
+| [`admin/`](admin/README.md) | Admin page without Lua (`admin.html`): status, Wi-Fi, LAN, system, services, log, backup, firmware. Talks only to `/ubus`; meant to replace LuCI in a LuCI-free firmware |
 | [`rtty/`](rtty/README.md) | rtty remote-terminal client built for the router (no TLS, 35 KiB on flash), kept for later; not installed |
 | [`lanwatch/`](lanwatch/README.md) | Lists the devices on the LAN (names, makers, first/last seen, new devices highlighted): `devices.html` |
 | [`tinymdns/`](tinymdns/README.md) | Minimal mDNS / DNS-SD advertiser (17 KiB): makes the router `openwrt.local` and advertises its web interface |
@@ -20,7 +21,8 @@ On the router:
 - `http://192.168.0.254/` or `http://openwrt.local/`: landing page
 - `http://192.168.0.254/traffic.html`: LTE usage, signal and connection dashboard
 - `http://192.168.0.254/devices.html`: devices on the network
-- `http://192.168.0.254/cgi-bin/luci`: LuCI admin (login required)
+- `http://192.168.0.254/admin.html`: router admin (login required)
+- `http://192.168.0.254/cgi-bin/luci`: LuCI, the original admin interface (login required)
 
 ### `docs/`
 

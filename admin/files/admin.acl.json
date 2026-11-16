@@ -1,0 +1,14 @@
+{
+	"admin": {
+		"description": "Full access for the admin page (/admin.html); granted to logins with read/write '*' in /etc/config/rpcd",
+		"read": {
+			"ubus": { "*": [ "*" ] },
+			"uci": [ "*" ]
+		},
+		"write": {
+			"ubus": { "*": [ "*" ] },
+			"uci": [ "*" ],
+			"cgi-io": [ "upload" ]
+		}
+	}
+}

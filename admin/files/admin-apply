@@ -1,0 +1,113 @@
+#!/bin/sh
+# Settings changes for /admin.html, with a safety net. Called through ubus "file" "exec".
+#
+#   admin-apply apply SECONDS OP ARG [OP ARG]...
+#       OP is set, delete or add_list; ARG is config.section.option[=value], as for uci.
+#       Snapshots the configs involved, makes and commits the changes, then reloads the
+#       services that use them. With SECONDS > 0 the change is undone after SECONDS
+#       unless confirmed.
+#   admin-apply confirm     keep a pending change
+#   admin-apply rollback    undo a pending change now
+#   admin-apply status      "pending SECONDS_LEFT CONFIG..." or "idle"
+#   admin-apply backup|restore /tmp/FILE.tar.gz   sysupgrade --create-backup / --restore-backup
+#   admin-apply bg CMD...   run CMD detached (rpcd kills "exec" calls after 3 seconds)
+#
+# rpcd 2015 can't be used for this: "uci apply" always fails on uClibc, and changes
+# staged with "uci set" can mix in other sessions' leftovers.
+D=/tmp/admin-apply
+
+die() { echo "$*"; exit 1; }
+
+detach() {	# fully detached (all fds closed), or rpcd waits for its output pipe and times out
+	cmd=$1; shift
+	# -p with a pid file that never exists: start even if the same binary is already running
+	start-stop-daemon -S -b -p /var/run/admin-apply.nopid -x "$cmd" -- "$@"
+}
+
+notify() {	# the event rpcd sends after a commit: procd reloads the services using the config
+	for c; do ubus call service event "{\"type\":\"config.change\",\"data\":{\"package\":\"$c\"}}"; done
+}
+
+undo() {
+	[ -f $D/configs ] || return
+	read cfgs < $D/configs
+	for c in $cfgs; do cp $D/$c /etc/config/$c; done
+	rm -rf $D
+	logger -t admin "settings change not kept, restored: $cfgs"
+	notify $cfgs
+}
+
+case "$1" in
+apply)
+	secs=$2; shift 2
+	case "$secs" in ''|*[!0-9]*) die "bad timeout";; esac
+	cfgs= op=
+	for a; do
+		[ -z "$op" ] && { op=$a; continue; }
+		case "$op" in set|delete|add_list) ;; *) die "bad operation: $op";; esac
+		c=${a%%.*}
+		case "$c" in ''|*[!a-z0-9_-]*) die "bad config name";; esac
+		[ -f /etc/config/$c ] || die "no such config: $c"
+		case " $cfgs " in *" $c "*) ;; *) cfgs="$cfgs $c";; esac
+		op=
+	done
+	[ -n "$op" ] && die "missing argument for $op"
+	[ -n "$cfgs" ] || die "nothing to change"
+	mkdir $D 2>/dev/null || { echo "another change is waiting to be kept or undone"; exit 2; }
+	for c in $cfgs; do cp /etc/config/$c $D/$c || { rm -rf $D; die "snapshot failed"; }; done
+	echo $cfgs > $D/configs
+	op=
+	for a; do
+		[ -z "$op" ] && { op=$a; continue; }
+		if ! uci -q $op "$a"; then
+			for c in $cfgs; do uci -q revert $c; done
+			rm -rf $D
+			die "uci rejected: $op $a"
+		fi
+		op=
+	done
+	for c in $cfgs; do uci -q commit $c; done
+	notify $cfgs
+	if [ "$secs" -gt 0 ]; then
+		tok=$$.$(cut -d' ' -f1 /proc/uptime)
+		echo $tok > $D/token
+		echo $(( $(cut -d. -f1 /proc/uptime) + secs )) > $D/deadline
+		detach "$0" expire $secs $tok
+	else
+		rm -rf $D
+	fi
+	;;
+expire)
+	sleep $2
+	[ "$(cat $D/token 2>/dev/null)" = "$3" ] && undo
+	;;
+confirm)
+	[ -f $D/token ] || { echo "nothing to keep"; exit 3; }
+	rm -rf $D
+	;;
+rollback)
+	[ -f $D/token ] || { echo "nothing to undo"; exit 3; }
+	undo
+	;;
+status)
+	if [ -f $D/token ]; then
+		echo "pending $(( $(cat $D/deadline) - $(cut -d. -f1 /proc/uptime) )) $(cat $D/configs)"
+	else
+		echo idle
+	fi
+	;;
+backup|restore)	# sysupgrade writes an empty archive when stdin is closed, as rpcd leaves it
+	case "$2" in /tmp/*.tar.gz) ;; *) die "file must be /tmp/*.tar.gz";; esac
+	[ $1 = backup ] && opt=--create-backup || opt=--restore-backup
+	sysupgrade $opt "$2" </dev/null >/dev/null 2>&1 || die "sysupgrade $opt failed"
+	[ -s "$2" ] || die "empty archive"
+	;;
+bg)
+	shift
+	[ -x "$1" ] || die "not executable: $1"
+	detach "$@"
+	;;
+*)
+	die "usage: admin-apply apply SECONDS OP ARG... | confirm | rollback | status | backup FILE | restore FILE | bg CMD..."
+	;;
+esac

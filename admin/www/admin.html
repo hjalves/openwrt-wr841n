@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>Router admin</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<style>
+:root{--page:#f9f9f7;--surface:#fcfcfb;--text:#0b0b0b;--text2:#52514e;--muted:#898781;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.04);--accent:#2a78d6;--on-accent:#fff;--good:#1d8a4e;--bad:#c93a3a;--warn:#b86e00}
+@media (prefers-color-scheme:dark){:root{--page:#0d0d0d;--surface:#1a1a19;--text:#f0efec;--text2:#c3c2b7;--border:rgba(255,255,255,.12);--wash:rgba(255,255,255,.05);--accent:#3987e5;--good:#3fb871;--bad:#ef6a6a;--warn:#e0a03a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+header,main{max-width:1100px;margin:0 auto;padding:0 20px}
+header{padding-top:28px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+h1{font-size:22px;font-weight:600;margin:0}
+h2{font-size:16px;font-weight:600;margin:0 0 12px}
+.sub{color:var(--text2);margin:2px 0 0;font-size:14px}
+.acts{display:flex;gap:14px;align-items:center;font-size:14px;white-space:nowrap}
+a{color:var(--accent)}
+nav{display:flex;gap:4px;margin:20px 0 18px;box-shadow:inset 0 -1px var(--border);overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav a{padding:8px 12px;text-decoration:none;color:var(--text2);border-bottom:2px solid transparent;white-space:nowrap}
+@media (max-width:600px){nav{gap:0}nav a{padding:8px 9px}.wide{display:none}}
+nav a[aria-current]{color:var(--text);border-color:var(--accent);font-weight:500}
+main{padding-bottom:60px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.grid .card{margin:0}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(460px,100%),1fr));gap:14px;margin-bottom:14px;align-items:stretch}
+.pair .card{margin:0}
+dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:14px}
+dt{color:var(--text2)}dd{margin:0;overflow-wrap:anywhere}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px;background:var(--muted)}
+.dot.on{background:var(--good)}.dot.off{background:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;font-weight:500;color:var(--text2);padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.scroll{overflow-x:auto}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+.muted{color:var(--muted)}.hint{color:var(--text2);font-size:13px;margin:4px 0 0}
+.row{display:grid;grid-template-columns:150px 1fr;gap:6px 16px;align-items:start;margin-bottom:12px}
+.row>label,.row>.lbl{padding-top:7px;color:var(--text2);font-size:14px}
+@media (max-width:600px){.row{grid-template-columns:1fr}.row>label,.row>.lbl{padding-top:0}}
+input[type=text],input[type=password],select{font:inherit;color:inherit;background:var(--page);border:1px solid var(--border);border-radius:8px;padding:6px 10px;width:100%;max-width:340px}
+input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input[aria-invalid=true]{border-color:var(--bad)}
+.check{display:flex;gap:8px;align-items:center;padding-top:6px}
+.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-size:14px;border-radius:8px;padding:7px 14px;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--text)}
+button:hover{background:var(--wash)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+button.primary:hover{filter:brightness(1.08)}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button.small{padding:3px 9px;font-size:13px}
+button.link{border:0;background:none;color:var(--accent);padding:0;font-size:14px}
+button:disabled{opacity:.55;cursor:default}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.err{color:var(--bad);font-size:14px;margin:8px 0 0}
+.ok{color:var(--good)}
+pre.log{margin:0;max-height:480px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+progress{width:100%;max-width:340px}
+dialog{border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);padding:22px 24px;max-width:min(480px,92vw)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog p{margin:0 0 10px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--text);color:var(--page);padding:9px 16px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.sr,input.sr{position:absolute;width:1px;height:1px;padding:0;border:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <div><h1>Router admin</h1><p class="sub" id="who">&nbsp;</p></div>
+    <div class="acts"><a href="/">Home</a><button class="link" id="logout" hidden>Log out</button></div>
+  </div>
+  <nav id="tabs" aria-label="Sections" hidden>
+    <a href="#status">Status</a><a href="#wifi">Wi-Fi</a><a href="#network">Network</a><a href="#system">System</a><a href="#maintenance">Backup<span class="wide"> &amp; firmware</span></a>
+  </nav>
+</header>
+<main id="view"></main>
+<dialog id="login">
+  <form method="dialog" id="loginForm">
+    <h2>Log in</h2>
+    <p class="hint" id="loginWhy">Use the router's root password.</p>
+    <input type="text" name="username" value="root" autocomplete="username" class="sr" tabindex="-1" aria-hidden="true">
+    <div class="row" style="grid-template-columns:1fr;margin-top:12px"><label for="pw" class="sr">Password</label>
+      <input type="password" id="pw" autocomplete="current-password" placeholder="Password" required></div>
+    <p class="err" id="loginErr" hidden></p>
+    <div class="btns"><button class="primary" id="loginBtn">Log in</button></div>
+  </form>
+</dialog>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+const ZERO = "0".repeat(32), HELPER = "/usr/libexec/admin-apply", ROLLBACK_SECS = 60;
+const $ = id => document.getElementById(id);
+let sid = sessionStorage.getItem("admin-sid") || "", rid = 0, loginWait = null, timers = [];
+
+/* ---------- small helpers ---------- */
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k == "class") e.className = v;
+    else if (k == "text") e.textContent = v;
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat(9)) if (c != null && c !== false) e.append(c instanceof Node ? c : String(c));
+  return e;
+}
+const pair = (...cards) => el("div", {class: "pair"}, cards);
+const card = (title, ...kids) => el("section", {class: "card"}, title && el("h2", {text: title}), ...kids);
+const kv = pairs => el("dl", null, pairs.filter(p => p && p[1] != null && p[1] !== "").map(([k, v]) => [el("dt", {text: k}), el("dd", null, v)]));
+const state = (on, word) => el("span", null, el("span", {class: "dot " + (on ? "on" : "off")}), word);
+let fid = 0;
+function field(label, control, hint) {
+  if (!control.id) control.id = "f" + ++fid;
+  return el("div", {class: "row"}, el("label", {for: control.id, text: label}), el("div", null, control, hint && el("p", {class: "hint"}, hint)));
+}
+function select(options, value) {       // options: [[value, label], ...]
+  const s = el("select");
+  if (value != null && !options.some(o => o[0] === value)) options = [[value, value], ...options];
+  for (const [v, l] of options) s.append(el("option", {value: v, selected: v === value, text: l}));
+  return s;
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3500);
+}
+function errBox(e) { return el("p", {class: "err", text: e && e.message || String(e)}); }
+async function busy(btn, fn) {
+  const was = btn.textContent; btn.disabled = true;
+  try { return await fn(); } finally { btn.disabled = false; btn.textContent = was; }
+}
+function every(ms, fn) {
+  const h = setInterval(() => { if (!document.hidden) fn().catch(() => {}); }, ms);
+  timers.push(h);
+}
+const fmtUp = s => { const d = s / 86400 | 0, h = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+const fmtMB = b => (b / 1048576).toLocaleString(undefined, {maximumFractionDigits: 1}) + " MB";
+const isIPv4 = s => /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(s);
+const ip2n = s => s.split(".").reduce((a, o) => a * 256 + +o, 0);
+const isMask = s => { if (!isIPv4(s)) return false; const n = ip2n(s), inv = 2 ** 32 - 1 - n; return n > 0 && (inv & (inv + 1)) === 0; };
+
+/* ---------- ubus over HTTP ---------- */
+const STATUS = ["ok", "invalid command", "invalid argument", "method not found", "not found", "no data",
+  "permission denied", "timed out", "not supported", "unknown error", "connection failed"];
+async function call(obj, method, args = {}, retry = true) {
+  let j;
+  try {
+    const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: ++rid, method: "call", params: [sid || ZERO, obj, method, args]})});
+    j = await r.json();
+  } catch (e) { throw new Error("Can't reach the router."); }
+  if (j.error) {
+    if (j.error.code == -32002 && retry) { await relogin(); return call(obj, method, args, false); }
+    throw new Error(j.error.message || "Request failed");
+  }
+  if (j.result[0]) throw new Error(`${obj} ${method}: ${STATUS[j.result[0]] || "error " + j.result[0]}`);
+  return j.result[1] || {};
+}
+const exec = (command, params = []) => call("file", "exec", {command, params: params.map(String)});
+async function helper(...p) {
+  const r = await exec(HELPER, p);
+  if (r.code) throw Object.assign(new Error((r.stdout || r.stderr || "failed").trim()), {code: r.code});
+  return (r.stdout || "").trim();
+}
+
+/* ---------- login ---------- */
+function relogin(why) {
+  if (!loginWait) loginWait = new Promise(res => {
+    const d = $("login");
+    $("loginWhy").textContent = why || (sid ? "Your session has expired. Log in again to continue." : "Use the router's root password.");
+    $("loginErr").hidden = true; $("pw").value = "";
+    d.oncancel = e => e.preventDefault();
+    $("loginForm").onsubmit = async e => {
+      e.preventDefault();
+      const b = $("loginBtn");
+      await busy(b, async () => {
+        try {
+          const r = await rawLogin($("pw").value);
+          if (!r) { $("loginErr").textContent = "Wrong password."; $("loginErr").hidden = false; return; }
+          sid = r; sessionStorage.setItem("admin-sid", sid);
+          d.close(); loginWait = null; res();
+        } catch (err) { $("loginErr").textContent = err.message; $("loginErr").hidden = false; }
+      });
+    };
+    d.showModal(); $("pw").focus();
+  });
+  return loginWait;
+}
+async function rawLogin(password) {   // session id, or null for a wrong password
+  let j;
+  try {
+    j = await (await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: ++rid, method: "call",
+        params: [ZERO, "session", "login", {username: "root", password, timeout: 1800}]})})).json();
+  } catch (e) { throw new Error("Can't reach the router."); }
+  return j.result && j.result[0] === 0 ? j.result[1].ubus_rpc_session : null;
+}
+
+/* ---------- dialogs ---------- */
+function ask(title, body, buttons) {    // buttons: [[value, label, class]], resolves with value
+  const d = $("dlg");
+  return new Promise(res => {
+    d.replaceChildren(el("h2", {text: title}), ...[body].flat().map(b => typeof b == "string" ? el("p", {text: b}) : b),
+      el("div", {class: "btns"}, buttons.map(([v, l, c]) => el("button", {class: c, text: l, onclick: () => { d.close(); res(v); }}))));
+    d.oncancel = () => res(null);
+    d.showModal();
+  });
+}
+const confirmAct = (title, body, label, cls = "primary") => ask(title, body, [[true, label, cls], [false, "Cancel"]]);
+
+// A settings change is live but not yet kept: offer Keep / Undo, undone by the router after the countdown.
+async function pendingDialog(newHost) {
+  const d = $("dlg"), left = el("strong"), msg = el("p"), keep = el("button", {class: "primary", text: "Keep changes"}),
+    undo = el("button", {text: "Undo now"}), err = el("p", {class: "err", hidden: true});
+  let secs = ROLLBACK_SECS, done = false, polling = false;
+  const body = newHost
+    ? [el("p", null, "The router is moving to ", el("strong", {text: newHost}), ". Open the new address within ", left,
+        " seconds to keep the change, otherwise the old settings come back."),
+      el("p", null, el("a", {href: `http://${newHost}/admin.html#keep=${sid}`, text: `Open http://${newHost}/admin.html`}))]
+    : [el("p", null, "The new settings are active. If everything still works, keep them. Otherwise they're undone automatically in ", left, " seconds."), msg];
+  d.replaceChildren(el("h2", {text: "Keep the new settings?"}), ...body, err, el("div", {class: "btns"}, newHost ? [] : [keep, undo]));
+  d.oncancel = e => e.preventDefault();
+  d.showModal();
+  return new Promise(res => {
+    const finish = text => { done = true; clearInterval(h); d.close(); toast(text); res(); route(); };
+    const tick = async () => {
+      left.textContent = Math.max(0, secs--);
+      if (done || polling || secs % 2) return;   // with newHost, success here means the old address came back
+      polling = true;
+      try {
+        const s = await helper("status");
+        msg.textContent = "";
+        if (s == "idle") finish("The change wasn't kept in time, so the previous settings were restored.");
+        else secs = Math.min(secs, +s.split(" ")[1]);
+      } catch (e) {
+        msg.textContent = "Waiting for the router… (reconnect to its Wi-Fi if you changed the network name or password)";
+      }
+      polling = false;
+    };
+    const h = setInterval(tick, 1000); tick();
+    keep.onclick = () => busy(keep, async () => {
+      try { await helper("confirm"); finish("Changes kept."); }
+      catch (e) { err.hidden = false; err.textContent = e.code == 3 ? "Too late: the previous settings were already restored." : e.message; }
+    });
+    undo.onclick = () => busy(undo, async () => {
+      try { await helper("rollback"); } catch (e) { /* already undone */ }
+      finish("Changes undone.");
+    });
+  });
+}
+
+// Apply uci operations through the helper. rollback: wait for "Keep" (network-affecting changes).
+async function applyOps(ops, rollback, newHost) {
+  if (!ops.length) { toast("Nothing changed."); return false; }
+  try { await helper("apply", rollback ? ROLLBACK_SECS : 0, ...ops); }
+  catch (e) {
+    if (e.code == 2) { await pendingDialog(); throw new Error("An earlier change was still waiting; try again."); }
+    throw e;
+  }
+  if (rollback) await pendingDialog(newHost); else toast("Saved.");
+  return true;
+}
+// Collect set/delete operations for changed values only.
+function differ(cfg) {
+  const ops = [];
+  const set = (sec, opt, val, cur) => {
+    cur = cur == null ? "" : Array.isArray(cur) ? cur.join(" ") : String(cur);
+    if (val === cur) return;
+    if (val === "") ops.push("delete", `${cfg}.${sec}.${opt}`);
+    else ops.push("set", `${cfg}.${sec}.${opt}=${val}`);
+  };
+  return {ops, set};
+}
+
+// Wait for the router to go away and come back (reboot, firmware), then reload.
+async function waitForRouter(title, text, expectSecs) {
+  const d = $("dlg"), st = el("p", {class: "muted", text: "Waiting for the router to go down…"});
+  d.replaceChildren(el("h2", {text: title}), el("p", {text}), st);
+  d.oncancel = e => e.preventDefault(); d.showModal();
+  const t0 = Date.now(), ping = async () => {
+    try { return (await (await fetch("/cgi-bin/routerinfo", {cache: "no-store", signal: AbortSignal.timeout(4000)})).json()).uptime; }
+    catch (e) { return null; }
+  };
+  let wentDown = false, lastUp = await ping();
+  for (;;) {
+    await new Promise(r => setTimeout(r, 3000));
+    const up = await ping(), el_ = (Date.now() - t0) / 1000 | 0;
+    if (up == null) wentDown = true;
+    else if (wentDown || (lastUp != null && up < lastUp)) { st.textContent = "Back. Reloading…"; sessionStorage.removeItem("admin-sid"); location.reload(); return; }
+    if (up != null) lastUp = up;
+    st.textContent = (wentDown ? "Restarting… " : "Waiting for the router to go down… ") + `${el_} s` +
+      (el_ > expectSecs ? ". This is taking longer than usual; keep this page open." : "");
+  }
+}
+
+/* ---------- time zones, from the browser's own data ---------- */
+function tzOffset(zone, t) {
+  const s = new Intl.DateTimeFormat("en-US", {timeZone: zone, timeZoneName: "longOffset"}).formatToParts(t).find(p => p.type == "timeZoneName").value;
+  const m = /([+-])(\d\d):(\d\d)/.exec(s);
+  return m ? (m[1] == "-" ? -1 : 1) * (m[2] * 60 + +m[3]) : 0;
+}
+function tzAbbr(zone, t, off) {
+  for (const loc of ["en-US", "en-GB"]) {
+    const n = new Intl.DateTimeFormat(loc, {timeZone: zone, timeZoneName: "short"}).formatToParts(t).find(p => p.type == "timeZoneName").value;
+    if (/^[A-Z]{3,5}$/.test(n) && (!/^(GMT|UTC)$/.test(n) || !off)) return n;
+  }
+  const a = Math.abs(off);
+  return "<" + (off < 0 ? "-" : "+") + String(a / 60 | 0).padStart(2, "0") + (a % 60 ? String(a % 60).padStart(2, "0") : "") + ">";
+}
+function tzPosix(zone, year = new Date().getFullYear()) {
+  const hm = m => { const a = Math.abs(m); return (m < 0 ? "-" : "") + (a / 60 | 0) + (a % 60 ? ":" + String(a % 60).padStart(2, "0") : ""); };
+  const t0 = Date.UTC(year, 0, 1), tr = [];
+  let prev = tzOffset(zone, t0);
+  for (let t = t0 + 864e5; t <= Date.UTC(year + 1, 0, 1); t += 864e5) {
+    const o = tzOffset(zone, t);
+    if (o == prev) continue;
+    let lo = t - 864e5, hi = t;
+    while (hi - lo > 6e4) { const mid = lo + Math.floor((hi - lo) / 12e4) * 6e4; if (tzOffset(zone, mid) == prev) lo = mid; else hi = mid; }
+    tr.push({t: hi, from: prev, to: o}); prev = o;
+  }
+  if (tr.length != 2) { const o = tzOffset(zone, Date.now()); return tzAbbr(zone, Date.now(), o) + hm(-o); }
+  const start = tr[0].to > tr[0].from ? tr[0] : tr[1], end = start == tr[0] ? tr[1] : tr[0];
+  const rule = x => {
+    const d = new Date(x.t + x.from * 6e4), day = d.getUTCDate(), dim = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return `M${d.getUTCMonth() + 1}.${day + 7 > dim ? 5 : Math.ceil(day / 7)}.${d.getUTCDay()}` + (mins == 120 ? "" : "/" + hm(mins));
+  };
+  return tzAbbr(zone, start.t - 6e4, start.from) + hm(-start.from) + tzAbbr(zone, start.t, start.to) +
+    (start.to - start.from == 60 ? "" : hm(-start.to)) + "," + rule(start) + "," + rule(end);
+}
+
+/* ---------- Status ---------- */
+async function lanNames() {
+  try {
+    const r = await call("lanwatch", "devices");
+    return Object.fromEntries((r.devices || []).map(d => [d.mac.toLowerCase(), d]));
+  } catch (e) { return {}; }
+}
+async function viewStatus(v) {
+  const grid = el("div", {class: "grid"}), clients = el("div");
+  v.append(grid, el("div", {style: "height:14px"}), clients);
+  const tick = async () => {
+    const [board, info, ri, dump, wdevs] = await Promise.all([call("system", "board"), call("system", "info"),
+      fetch("/cgi-bin/routerinfo", {cache: "no-store"}).then(r => r.json()).catch(() => null),
+      call("network.interface", "dump"), call("iwinfo", "devices").catch(() => ({devices: []}))]);
+    const dev = (wdevs.devices || [])[0];
+    const [wi, assoc, names] = dev ? await Promise.all([call("iwinfo", "info", {device: dev}).catch(() => null),
+      call("iwinfo", "assoclist", {device: dev}).catch(() => ({results: []})), lanNames()]) : [null, {results: []}, {}];
+    $("who").textContent = `${board.hostname} · ${board.model}`;
+    const lt = new Date(info.localtime * 1000).toLocaleString(undefined, {timeZone: "UTC", dateStyle: "medium", timeStyle: "short"});
+    const ifs = (dump.interface || []).filter(i => i.interface != "loopback");
+    const lan = ifs.find(i => i.interface == "lan") || ifs.find(i => i.up) || {};
+    const a4 = (lan["ipv4-address"] || [])[0], gw = (lan.route || []).find(r => r.target == "0.0.0.0" && !r.mask);
+    const enc = wi && wi.encryption;
+    grid.replaceChildren(
+      card("System", kv([["Model", board.model], ["Firmware", board.release.description], ["Kernel", board.kernel],
+        ["Router time", lt], ["Uptime", fmtUp(info.uptime)], ["Load", info.load.map(l => (l / 65536).toFixed(2)).join(" · ")],
+        ["Memory", ri ? `${fmtMB(ri.mem_available_kb * 1024)} free of ${fmtMB(ri.mem_total_kb * 1024)}` : fmtMB(info.memory.free) + " free"],
+        ["Flash", ri ? `${ri.flash_free_kb} KB free of ${ri.flash_total_kb} KB` : null]])),
+      card("Network", kv([...ifs.map(i => [i.interface.toUpperCase(), state(i.up, i.up ? "Up" : "Down")]),
+        ["Address", a4 ? `${a4.address}/${a4.mask}` : null], ["Gateway", gw && gw.nexthop],
+        ["DNS", (lan["dns-server"] || []).join(" · ")]])),
+      card("Wi-Fi", wi ? kv([["Status", state(true, "On")], ["Network", wi.ssid], ["Channel", `${wi.channel} (${wi.frequency} MHz)`],
+        ["Power", wi.txpower + " dBm"], ["Country", wi.country],
+        ["Security", enc && enc.enabled ? `WPA${(enc.wpa || []).join("/")} ${(enc.authentication || []).join(" ").toUpperCase()}` : "Open"],
+        ["Clients", (assoc.results || []).length]]) : kv([["Status", state(false, "Off")]])));
+    const rows = (assoc.results || []).map(c => {
+      const n = names[c.mac.toLowerCase()] || {};
+      return el("tr", null, el("td", null, n.name || el("span", {class: "muted", text: "Unknown"})), el("td", {text: n.ip || ""}),
+        el("td", {class: "mono", text: c.mac}), el("td", {class: "num", text: c.signal + " dBm"}),
+        el("td", {class: "num", text: `${(c.tx.rate / 1000).toFixed(0)} / ${(c.rx.rate / 1000).toFixed(0)}`}),
+        el("td", {class: "num", text: c.inactive < 10000 ? "now" : fmtUp(c.inactive / 1000 | 0).replace(/^0 min$/, "<1 min")}));
+    });
+    clients.replaceChildren(card("Wi-Fi clients", rows.length ? el("div", {class: "scroll"}, el("table", null,
+      el("thead", null, el("tr", null, ["Device", "IP", "MAC", "Signal", "Mbit/s to / from", "Last active"].map((h, i) => el("th", {class: i > 2 ? "num" : null, text: h})))),
+      el("tbody", null, rows))) : el("p", {class: "muted", text: "No devices connected to this router's Wi-Fi."}),
+      el("p", {class: "hint", text: "Names come from the Devices page (lanwatch). Devices on the Huawei's own Wi-Fi aren't listed here."})));
+  };
+  await tick(); every(5000, tick);
+}
+
+/* ---------- Wi-Fi ---------- */
+async function viewWifi(v) {
+  const w = (await call("uci", "get", {config: "wireless"})).values || {};
+  const secs = Object.values(w).sort((a, b) => a[".index"] - b[".index"]);
+  const radio = secs.find(s => s[".type"] == "wifi-device"), iface = radio && secs.find(s => s[".type"] == "wifi-iface" && s.device == radio[".name"]);
+  if (!radio || !iface) { v.append(card("Wi-Fi", el("p", {text: "No Wi-Fi radio is configured."}))); return; }
+  const dev = ((await call("iwinfo", "devices").catch(() => ({}))).devices || [])[0];
+  const list = m => dev ? call("iwinfo", m, {device: dev}).then(r => r.results || []).catch(() => []) : Promise.resolve([]);
+  const [freqs, powers, countries] = await Promise.all([list("freqlist"), list("txpowerlist"), list("countrylist")]);
+  const R = radio[".name"], I = iface[".name"];
+  const on = el("input", {type: "checkbox", checked: radio.disabled != "1"});
+  const ssid = el("input", {type: "text", value: iface.ssid || "", maxlength: 32, autocomplete: "off", spellcheck: "false"});
+  const encs = [["psk2", "WPA2 Personal"], ["psk-mixed", "WPA/WPA2 Personal (for very old devices)"], ["none", "Open (no password)"]];
+  const enc = select(encs, iface.encryption || "none");
+  const key = el("input", {type: "password", value: iface.key || "", autocomplete: "new-password", spellcheck: "false"});
+  const show = el("button", {type: "button", class: "small", text: "Show"});
+  show.onclick = () => { const p = key.type == "password"; key.type = p ? "text" : "password"; show.textContent = p ? "Hide" : "Show"; };
+  const hidden = el("input", {type: "checkbox", checked: iface.hidden == "1"});
+  const chan = select([["auto", "Automatic"], ...freqs.filter(f => !f.restricted).map(f => [String(f.channel), `Channel ${f.channel} (${f.mhz} MHz)`])], radio.channel || "auto");
+  const width = select([["HT20", "20 MHz"], ["HT40", "40 MHz"]], radio.htmode || "HT20");
+  const seen = new Set();
+  const power = select([["", "Default (maximum allowed)"], ...powers.filter(p => !seen.has(p.dbm) && seen.add(p.dbm)).map(p => [String(p.dbm), `${p.dbm} dBm (${p.mw} mW)`])], radio.txpower || "");
+  let rn; try { rn = new Intl.DisplayNames(["en"], {type: "region"}); } catch (e) { /* old browser */ }
+  const cc = [...new Set(countries.map(c => c.iso3166).filter(c => /^[A-Z]{2}$|^00$/.test(c || "")))]
+    .map(c => [c, c == "00" ? "World (not set)" : `${rn ? rn.of(c) : c} (${c})`]).sort((a, b) => a[1].localeCompare(b[1]));
+  const country = select(cc, radio.country || "00");
+  const err = el("p", {class: "err", hidden: true});
+  const keyRow = field("Password", el("div", {class: "inline"}, key, show), "8 to 63 characters.");
+  const sync = () => { keyRow.hidden = enc.value == "none"; };
+  enc.onchange = sync; sync();
+  const save = el("button", {class: "primary", text: "Save"});
+  save.onclick = () => busy(save, async () => {
+    err.hidden = true;
+    const bad = (m, i) => { err.textContent = m; err.hidden = false; if (i) { i.setAttribute("aria-invalid", "true"); i.focus(); } };
+    [ssid, key].forEach(i => i.removeAttribute("aria-invalid"));
+    const n = new TextEncoder().encode(ssid.value).length;
+    if (!n || n > 32) return bad("The network name must be 1 to 32 bytes long.", ssid);
+    if (/[\x00-\x1f\x7f]/.test(ssid.value)) return bad("The network name can't contain control characters.", ssid);
+    if (enc.value != "none" && !/^[\x20-\x7e]{8,63}$/.test(key.value) && !/^[0-9a-fA-F]{64}$/.test(key.value))
+      return bad("The password must be 8 to 63 ordinary characters (letters, digits, punctuation, spaces).", key);
+    const {ops, set} = differ("wireless");
+    set(R, "disabled", on.checked ? (radio.disabled == null ? "" : "0") : "1", radio.disabled);
+    set(R, "channel", chan.value, radio.channel);
+    set(R, "htmode", width.value, radio.htmode);
+    set(R, "txpower", power.value, radio.txpower);
+    set(R, "country", country.value == "00" && radio.country == null ? "" : country.value, radio.country);
+    set(I, "ssid", ssid.value, iface.ssid);
+    set(I, "encryption", enc.value, iface.encryption);
+    if (enc.value != "none") set(I, "key", key.value, iface.key);
+    set(I, "hidden", hidden.checked ? "1" : (iface.hidden == null ? "" : "0"), iface.hidden);
+    try { await applyOps(ops, true); } catch (e) { bad(e.message); }
+  });
+  const scanOut = el("div"), scan = el("button", {text: "Scan for nearby networks", disabled: !dev});
+  scan.onclick = () => busy(scan, async () => {
+    scan.textContent = "Scanning…";
+    try {
+      const r = (await call("iwinfo", "scan", {device: dev})).results || [];
+      r.sort((a, b) => b.signal - a.signal);
+      const per = {}; r.forEach(n => per[n.channel] = (per[n.channel] || 0) + 1);
+      scanOut.replaceChildren(
+        el("p", {class: "hint", text: "Networks per channel: " + Object.keys(per).sort((a, b) => a - b).map(c => `${c}: ${per[c]}`).join(" · ")}),
+        el("div", {class: "scroll"}, el("table", null, el("thead", null, el("tr", null, ["Network", "Channel", "Signal", "Security"].map((h, i) => el("th", {class: i && i < 3 ? "num" : null, text: h})))),
+          el("tbody", null, r.map(n => el("tr", null, el("td", null, n.ssid || el("span", {class: "muted", text: "(hidden)"})),
+            el("td", {class: "num", text: n.channel}), el("td", {class: "num", text: n.signal + " dBm"}),
+            el("td", {text: n.encryption && n.encryption.enabled ? (n.encryption.wpa && n.encryption.wpa.length ? "WPA" + n.encryption.wpa.join("/") : "WEP") : "Open"})))))));
+    } catch (e) { scanOut.replaceChildren(errBox(e)); }
+  });
+  v.append(
+    pair(card("Wi-Fi network",
+        field("Wi-Fi", el("label", {class: "check"}, on, "On")),
+        field("Network name", ssid),
+        field("Security", enc), keyRow,
+        field("Hidden", el("label", {class: "check"}, hidden, "Don't broadcast the network name"))),
+      card("Radio",
+        field("Channel", chan, `Now on channel ${(freqs.find(f => f.active) || {}).channel || "–"}.`),
+        field("Channel width", width, "40 MHz is faster but more prone to interference on 2.4 GHz."),
+        field("Transmit power", power),
+        field("Country", country, "Sets the channels and power allowed."))),
+    el("div", {style: "margin:0 0 22px"}, err, el("div", {class: "btns", style: "margin-top:0"}, save),
+      el("p", {class: "hint", text: `Saves both cards. You then have ${ROLLBACK_SECS} seconds to confirm. If you're connected through this Wi-Fi and change its name or password, reconnect to the new network first.`})),
+    card("Nearby networks", el("p", {class: "hint", text: "Scanning briefly pauses this router's Wi-Fi for its clients."}), el("div", {class: "btns"}, scan), scanOut));
+}
+
+/* ---------- Network ---------- */
+async function viewNetwork(v) {
+  const [net, dhcp, st] = await Promise.all([call("uci", "get", {config: "network"}), call("uci", "get", {config: "dhcp"}).catch(() => ({})),
+    call("network.interface.lan", "status").catch(() => null)]);
+  const devst = st && st.l3_device ? await call("network.device", "status", {name: st.l3_device}).catch(() => null) : null;
+  const lan = (net.values || {}).lan;
+  if (!lan) { v.append(card("Network", el("p", {text: "There's no LAN interface in the configuration."}))); return; }
+  const inp = (val, ph) => el("input", {type: "text", value: Array.isArray(val) ? val.join(" ") : val || "", placeholder: ph || "", spellcheck: "false", inputmode: "decimal"});
+  const ip = inp(lan.ipaddr), mask = inp(lan.netmask, "255.255.255.0"), gw = inp(lan.gateway, "none"), dns = inp(lan.dns, "none");
+  const dl = ((dhcp.values || {}).lan || {});
+  const err = el("p", {class: "err", hidden: true}), save = el("button", {class: "primary", text: "Save"});
+  save.onclick = () => busy(save, async () => {
+    err.hidden = true;
+    const bad = (m, i) => { err.textContent = m; err.hidden = false; i.setAttribute("aria-invalid", "true"); i.focus(); };
+    [ip, mask, gw, dns].forEach(i => { i.removeAttribute("aria-invalid"); i.value = i.value.trim(); });
+    if (!isIPv4(ip.value)) return bad("Enter an IPv4 address such as 192.168.0.254.", ip);
+    if (!isMask(mask.value)) return bad("Enter a netmask such as 255.255.255.0.", mask);
+    if (gw.value && !isIPv4(gw.value)) return bad("The gateway must be an IPv4 address, or empty.", gw);
+    const servers = dns.value.split(/[\s,]+/).filter(Boolean);
+    if (servers.some(s => !isIPv4(s))) return bad("DNS servers must be IPv4 addresses, separated by spaces.", dns);
+    if (gw.value) {
+      const m = ip2n(mask.value);
+      if ((ip2n(gw.value) & m) >>> 0 != (ip2n(ip.value) & m) >>> 0) return bad("The gateway must be on the same network as the address.", gw);
+    }
+    const {ops, set} = differ("network");
+    set("lan", "ipaddr", ip.value, lan.ipaddr);
+    set("lan", "netmask", mask.value, lan.netmask);
+    set("lan", "gateway", gw.value, lan.gateway);
+    if (Array.isArray(lan.dns)) {
+      if (servers.join(" ") != lan.dns.join(" ")) { ops.push("delete", "network.lan.dns"); servers.forEach(s => ops.push("add_list", "network.lan.dns=" + s)); }
+    } else set("lan", "dns", servers.join(" "), lan.dns);
+    const moved = ip.value != lan.ipaddr && ip.value != location.hostname ? ip.value : null;
+    if (moved && !await confirmAct("Change the router's address?",
+      [`The router will move to ${ip.value}. This page will lose its connection; you'll get a link to the new address, and have ${ROLLBACK_SECS} seconds to open it.`], "Change address")) return;
+    try { await applyOps(ops, true, moved); } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
+  const a4 = st && (st["ipv4-address"] || [])[0], gw4 = st && (st.route || []).find(r => r.target == "0.0.0.0" && !r.mask);
+  const live = card("In use now", st ? kv([["Status", state(st.up, st.up ? "Up" : "Down")], ["Address", a4 && `${a4.address}/${a4.mask}`],
+    ["Gateway", gw4 && gw4.nexthop], ["DNS", (st["dns-server"] || []).join(" · ")], ["Up for", st.uptime != null ? fmtUp(st.uptime) : null],
+    ["Device", st.l3_device], ["Bridge ports", devst && devst["bridge-members"] ? devst["bridge-members"].join(" · ") : null],
+    ["MAC", devst && devst.macaddr && el("span", {class: "mono", text: devst.macaddr})]]) : el("p", {class: "muted", text: "Status unavailable."}),
+    el("p", {class: "hint", text: "What the router is using right now, which can differ from the saved settings until they're applied."}));
+  v.append(pair(card("LAN",
+    field("Address", ip), field("Netmask", mask),
+    field("Gateway", gw, "The router that connects to the internet (the Huawei)."),
+    field("DNS servers", dns, "Separated by spaces. Used by the router itself."),
+    el("div", {class: "row"}, el("span", {class: "lbl", text: "DHCP server"}),
+      el("div", {style: "padding-top:7px"}, dl.ignore == "1" ? "Off: another router hands out addresses." : "On")),
+    err, el("div", {class: "btns"}, save),
+    el("p", {class: "hint", text: `After saving you have ${ROLLBACK_SECS} seconds to confirm, otherwise the previous settings come back.`})), live));
+}
+
+/* ---------- System ---------- */
+async function viewSystem(v) {
+  const [sys, info] = await Promise.all([call("uci", "get", {config: "system"}), call("system", "info")]);
+  const s = Object.values(sys.values || {}).find(x => x[".type"] == "system") || {}, S = s[".name"];
+  // Router and time
+  const host = el("input", {type: "text", value: s.hostname || "", maxlength: 63, spellcheck: "false"});
+  let zones = []; try { zones = Intl.supportedValuesOf("timeZone"); } catch (e) { /* old browser */ }
+  if (!zones.includes("UTC")) zones = ["UTC", ...zones];
+  const zone = select(zones.map(z => [z, z.replace(/_/g, " ")]), s.zonename || "UTC");
+  let posix = s.timezone || "";   // the POSIX TZ string the router's C library needs, worked out from the zone
+  zone.onchange = () => { try { posix = zone.value == "UTC" ? "UTC0" : tzPosix(zone.value); } catch (e) { posix = ""; } };
+  const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const useMine = el("button", {type: "button", class: "small", text: "Use this device's time zone", hidden: !zones.includes(mine) || mine == s.zonename});
+  useMine.onclick = () => { zone.value = mine; zone.onchange(); };
+  const rtime = new Date(info.localtime * 1000).toLocaleString(undefined, {timeZone: "UTC", dateStyle: "medium", timeStyle: "medium"});
+  const err1 = el("p", {class: "err", hidden: true}), save1 = el("button", {class: "primary", text: "Save"});
+  save1.onclick = () => busy(save1, async () => {
+    err1.hidden = true;
+    if (!/^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(host.value)) { err1.textContent = "Use letters, digits and hyphens only (not at the start or end)."; err1.hidden = false; host.focus(); return; }
+    if (!/^[\x21-\x7e]+$/.test(posix)) { err1.textContent = "This browser couldn't work out the rules for that time zone."; err1.hidden = false; zone.focus(); return; }
+    const {ops, set} = differ("system");
+    set(S, "hostname", host.value, s.hostname);
+    set(S, "zonename", zone.value, s.zonename);
+    set(S, "timezone", posix, s.timezone);
+    try { if (await applyOps(ops, false)) setTimeout(route, 1500); } catch (e) { err1.textContent = e.message; err1.hidden = false; }
+  });
+  // Password
+  const p1 = el("input", {type: "password", autocomplete: "new-password"}), p2 = el("input", {type: "password", autocomplete: "new-password"});
+  const err2 = el("p", {class: "err", hidden: true}), save2 = el("button", {class: "primary", text: "Change password"});
+  save2.onclick = () => busy(save2, async () => {
+    err2.hidden = true;
+    const fail = m => { err2.textContent = m; err2.hidden = false; };
+    if (!p1.value) return fail("Enter a new password.");
+    if (p1.value != p2.value) return fail("The two passwords don't match.");
+    if (/[\x00-\x1f]/.test(p1.value)) return fail("The password can't contain control characters.");
+    if (p1.value.length < 8 && !await confirmAct("Use a short password?", ["Passwords under 8 characters are easy to guess."], "Use it anyway")) return;
+    try {
+      await call("rpc-sys", "password_set", {user: "root", password: p1.value});
+      const check = await rawLogin(p1.value);        // the change is only reported by logging in with it
+      if (!check) return fail("The router didn't accept the new password. The old one is still valid.");
+      await call("session", "destroy", {ubus_rpc_session: check}).catch(() => {});
+      p1.value = p2.value = ""; toast("Password changed. It's also the SSH password.");
+    } catch (e) { fail(e.message); }
+  });
+  // Services
+  const svcBox = el("div");
+  const loadSvcs = async () => {
+    const [ls, rc, procd] = await Promise.all([call("file", "list", {path: "/etc/init.d"}), call("file", "list", {path: "/etc/rc.d"}), call("service", "list")]);
+    const enabled = new Set((rc.entries || []).map(e => (/^S\d\d(.+)$/.exec(e.name) || [])[1]).filter(Boolean));
+    const names = (ls.entries || []).filter(e => e.type == "file").map(e => e.name).sort();
+    const act = (name, a, btn) => busy(btn, async () => {
+      if (a == "stop" && /^(network|uhttpd|rpcd|dropbear|firewall)$/.test(name) &&
+        !await confirmAct(`Stop ${name}?`, [`The router and this page depend on ${name}. Stopping it may cut you off until the router restarts.`], "Stop", "danger")) return;
+      try {
+        if (a == "enable" || a == "disable") { const r = await exec("/etc/init.d/" + name, [a]); if (r.code) throw new Error((r.stdout || r.stderr || "failed").trim()); }
+        else await helper("bg", "/etc/init.d/" + name, a);
+        await new Promise(r => setTimeout(r, a == "enable" || a == "disable" ? 0 : 1500));
+        toast(`${name}: ${a} done.`);
+      } catch (e) { toast(`${name}: ${e.message}`); }
+      await loadSvcs();
+    });
+    svcBox.replaceChildren(el("div", {class: "scroll"}, el("table", null,
+      el("thead", null, el("tr", null, ["Service", "Running", "At boot", ""].map(h => el("th", {text: h})))),
+      el("tbody", null, names.map(n => {
+        const p = procd[n], inst = p && p.instances ? Object.values(p.instances) : null;
+        const running = inst && inst.length ? inst.some(i => i.running) : null, en = enabled.has(n);
+        const b = (label, a, cls) => { const x = el("button", {class: "small " + (cls || ""), text: label}); x.onclick = () => act(n, a, x); return x; };
+        return el("tr", null, el("td", {text: n}),
+          el("td", null, running == null ? el("span", {class: "muted", text: "–"}) : state(running, running ? "Running" : "Stopped")),
+          el("td", {text: en ? "Enabled" : "Disabled"}),
+          el("td", null, el("div", {class: "inline"}, b("Start", "start"), b("Restart", "restart"), b("Stop", "stop"), en ? b("Disable", "disable") : b("Enable", "enable"))));
+      })))), el("p", {class: "hint", text: "“–” means a one-off boot script, or a service not managed by procd."}));
+  };
+  // Log
+  const logPre = el("pre", {class: "log mono"}), filt = el("input", {type: "text", placeholder: "Filter", style: "max-width:220px"});
+  let logText = "";
+  const showLog = () => { const f = filt.value.toLowerCase(); logPre.textContent = logText.split("\n").filter(l => !f || l.toLowerCase().includes(f)).join("\n"); logPre.scrollTop = logPre.scrollHeight; };
+  const loadLog = async () => { const r = await exec("/sbin/logread", ["-l", 300]); logText = (r.stdout || "").trimEnd(); showLog(); };
+  filt.oninput = showLog;
+  const refresh = el("button", {class: "small", text: "Refresh"}); refresh.onclick = () => busy(refresh, loadLog);
+  // Restart
+  const reboot = el("button", {class: "danger", text: "Restart router"});
+  reboot.onclick = async () => {
+    if (!await confirmAct("Restart the router?", ["Its Wi-Fi and this page are unavailable for about a minute."], "Restart", "danger")) return;
+    try { await helper("bg", "/sbin/reboot"); } catch (e) { toast(e.message); return; }
+    waitForRouter("Restarting", "The router is restarting. This page reloads when it's back.", 120);
+  };
+  v.append(
+    pair(card("Router",
+      field("Hostname", host, "Also its name on the network: " + (s.hostname || "openwrt").toLowerCase() + ".local"),
+      field("Time zone", zone, el("span", null, `Router time: ${rtime}. `, useMine)),
+      err1, el("div", {class: "btns"}, save1)),
+    card("Password", el("p", {class: "hint", text: "The root password, used for this page, LuCI and SSH."}),
+      field("New password", p1), field("Repeat it", p2), err2, el("div", {class: "btns"}, save2))),
+    card("Services", svcBox),
+    card("System log", el("div", {class: "inline", style: "margin-bottom:10px"}, filt, refresh), logPre),
+    card("Restart", el("p", {class: "hint", text: "Services save their data before the restart."}), el("div", {class: "btns"}, reboot)));
+  await Promise.all([loadSvcs(), loadLog()]);
+}
+
+/* ---------- Backup & firmware ---------- */
+function upload(path, file, onprogress) {
+  return new Promise((res, rej) => {
+    const fd = new FormData();
+    fd.append("sessionid", sid); fd.append("filename", path); fd.append("filemode", "0600"); fd.append("filedata", file);
+    const x = new XMLHttpRequest();
+    x.open("POST", "/cgi-bin/cgi-upload");
+    x.upload.onprogress = e => onprogress && e.lengthComputable && onprogress(e.loaded / e.total);
+    x.onload = () => {
+      let j = null; try { j = JSON.parse(x.responseText); } catch (e) { /* not JSON */ }
+      if (j && j.size != null) res(j);
+      else rej(new Error(j && j.message ? j.message + (j.failure ? ` (${j.failure[1]})` : "") : x.responseText.trim() || "Upload failed."));
+    };
+    x.onerror = () => rej(new Error("Upload failed: can't reach the router."));
+    x.send(fd);
+  });
+}
+async function viewMaintenance(v) {
+  const ri = await fetch("/cgi-bin/routerinfo", {cache: "no-store"}).then(r => r.json()).catch(() => null);
+  // Backup
+  const dl = el("button", {class: "primary", text: "Download backup"});
+  dl.onclick = () => busy(dl, async () => {
+    // cgi-io's own backup download is broken in 15.05 (truncated chunked reply), so: create, read as base64, delete
+    const tmp = "/tmp/admin-backup.tar.gz";
+    try {
+      await helper("backup", tmp);
+      const r = await call("file", "read", {path: tmp, base64: true}).finally(() => exec("/bin/rm", ["-f", tmp]).catch(() => {}));
+      const bin = Uint8Array.from(atob(r.data.replace(/\s/g, "")), ch => ch.charCodeAt(0));
+      const b = await call("system", "board"), day = new Date().toISOString().slice(0, 10);
+      const a = el("a", {href: URL.createObjectURL(new Blob([bin], {type: "application/gzip"})), download: `backup-${b.hostname}-${day}.tar.gz`});
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (e) { toast(e.message); }
+  });
+  // Restore
+  const rfile = el("input", {type: "file", accept: ".tar.gz,.tgz,application/gzip"}), rerr = el("p", {class: "err", hidden: true});
+  const rbtn = el("button", {text: "Restore…"});
+  rbtn.onclick = () => busy(rbtn, async () => {
+    rerr.hidden = true;
+    const f = rfile.files[0];
+    if (!f) { rerr.textContent = "Choose a backup file first."; rerr.hidden = false; return; }
+    try {
+      await call("session", "access", {scope: "cgi-io", object: "upload", function: "write"});
+      await upload("/tmp/backup.tar.gz", f);
+      const t = await exec("/bin/tar", ["-tzf", "/tmp/backup.tar.gz"]);
+      const files = (t.stdout || "").split("\n").filter(Boolean);
+      if (t.code || !files.length) throw new Error("That isn't a backup made by this kind of router (not a .tar.gz archive).");
+      const odd = files.filter(x => !/^(\.\/)?etc\//.test(x));
+      const ok = await confirmAct("Restore this backup?", [
+        `It contains ${files.length} files${odd.length ? `, including ${odd.length} outside /etc` : ""}. They replace the current settings, then the router restarts.`,
+        el("pre", {class: "log mono", style: "max-height:160px", text: files.join("\n")})], "Restore and restart", "danger");
+      if (!ok) { await exec("/bin/rm", ["-f", "/tmp/backup.tar.gz"]); return; }
+      await helper("restore", "/tmp/backup.tar.gz");
+      await helper("bg", "/sbin/reboot");
+      waitForRouter("Restoring", "The settings were restored and the router is restarting.", 120);
+    } catch (e) {
+      exec("/bin/rm", ["-f", "/tmp/backup.tar.gz"]).catch(() => {});
+      rerr.textContent = e.message; rerr.hidden = false;
+    }
+  });
+  // Firmware
+  const ffile = el("input", {type: "file", accept: ".bin"}), ferr = el("p", {class: "err", hidden: true}), fout = el("div");
+  const fbtn = el("button", {text: "Upload and check…"}), prog = el("progress", {max: 1, value: 0, hidden: true});
+  fbtn.onclick = () => busy(fbtn, async () => {
+    ferr.hidden = true; fout.replaceChildren();
+    const f = ffile.files[0];
+    if (!f) { ferr.textContent = "Choose a firmware file first."; ferr.hidden = false; return; }
+    try {
+      const mem = await fetch("/cgi-bin/routerinfo", {cache: "no-store"}).then(r => r.json());
+      if (mem.mem_available_kb * 1024 < f.size * 2 + 2097152)     // the upload is staged in RAM twice
+        throw new Error(`Not enough free memory for a ${fmtMB(f.size)} file (${fmtMB(mem.mem_available_kb * 1024)} free). Stopping services such as lanwatch first can help.`);
+      await call("session", "access", {scope: "cgi-io", object: "upload", function: "write"});
+      prog.hidden = false; prog.value = 0;
+      const up = await upload("/tmp/firmware.bin", f, p => { prog.value = p; fbtn.textContent = `Uploading ${Math.round(p * 100)}%`; });
+      prog.hidden = true; fbtn.textContent = "Checking…";
+      const t = await call("rpc-sys", "upgrade_test");
+      const good = t.code === 0, msg = (t.stderr || t.stdout || "").trim();
+      const keep = el("input", {type: "checkbox", checked: true}), flash = el("button", {class: "danger", text: "Flash firmware", disabled: !good});
+      const cancel = el("button", {text: "Cancel"});
+      cancel.onclick = async () => { await call("rpc-sys", "upgrade_clean").catch(() => {}); fout.replaceChildren(); toast("Firmware file removed."); };
+      flash.onclick = async () => {
+        if (!await confirmAct("Flash this firmware?", [
+          "Don't unplug the router while it's flashing: that can leave it unable to start. It takes a few minutes.",
+          keep.checked ? "Settings are kept. Programs installed after the original firmware (huawei-trafficd, lanwatch, tinymdns, this page) are removed unless the new firmware includes them."
+            : "All settings are erased: the router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Flash", "danger")) return;
+        await call("rpc-sys", "upgrade_start", {keep: keep.checked});
+        waitForRouter("Flashing firmware", "Don't unplug the router. This page reloads when it's back" + (keep.checked ? "." : " (if it comes back at this address)."), 300);
+      };
+      fout.replaceChildren(kv([["File", f.name], ["Size", `${up.size.toLocaleString()} bytes`], ["MD5", el("span", {class: "mono", text: up.checksum})],
+        ["Check", good ? el("span", {class: "ok", text: "Valid image for this router"}) : el("span", {class: "err", text: "Rejected" + (msg ? ": " + msg : "")})]]),
+        el("p", {class: "hint", text: "Compare the MD5 with the one published for the download."}),
+        field("Keep settings", el("label", {class: "check"}, keep, "Keep the current configuration")),
+        el("div", {class: "btns"}, flash, cancel));
+    } catch (e) { prog.hidden = true; ferr.textContent = e.message; ferr.hidden = false; }
+  });
+  // Factory reset
+  const reset = el("button", {class: "danger", text: "Reset to factory settings…"});
+  reset.onclick = async () => {
+    if (!await confirmAct("Erase all settings?", ["Everything changed since the firmware was installed is erased: settings, passwords and installed programs (huawei-trafficd, lanwatch, tinymdns, this page).",
+      "The router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Erase everything", "danger")) return;
+    try { await call("rpc-sys", "factory"); } catch (e) { toast(e.message); return; }
+    waitForRouter("Resetting", "The router is erasing its settings and restarting. It will come back at 192.168.1.1, not here.", 180);
+  };
+  v.append(
+    pair(card("Backup", el("p", {class: "hint", text: "The configuration files (/etc/config and others listed for keeping), as a .tar.gz. It includes the password hash and Wi-Fi password: keep it private."}), el("div", {class: "btns"}, dl)),
+    card("Restore", field("Backup file", rfile), rerr, el("div", {class: "btns"}, rbtn))),
+    pair(card("Firmware upgrade", el("p", {class: "hint", text: "Use the “sysupgrade” image for this exact model. It's checked before anything is written." +
+        (ri ? ` Free memory: ${fmtMB(ri.mem_available_kb * 1024)}.` : "")}),
+      field("Firmware file", ffile), prog, ferr, el("div", {class: "btns"}, fbtn), fout),
+    card("Factory reset", el("p", {class: "hint", text: "Erases all settings and installed programs."}), el("div", {class: "btns"}, reset))));
+}
+
+/* ---------- routing ---------- */
+const VIEWS = {status: viewStatus, wifi: viewWifi, network: viewNetwork, system: viewSystem, maintenance: viewMaintenance};
+let routeSeq = 0;
+async function route() {
+  const name = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "status", seq = ++routeSeq;
+  timers.forEach(clearInterval); timers = [];
+  document.querySelectorAll("#tabs a").forEach(a => a.toggleAttribute("aria-current", a.hash == "#" + name));
+  const v = el("div", null, el("p", {class: "muted", text: "Loading…"}));
+  $("view").replaceChildren(v);
+  try {
+    const body = el("div");
+    await VIEWS[name](body);
+    if (seq == routeSeq) v.replaceChildren(body);
+  } catch (e) { if (seq == routeSeq) v.replaceChildren(card("Couldn't load this page", errBox(e))); }
+}
+$("logout").onclick = async () => {
+  await call("session", "destroy", {}, false).catch(() => {});
+  sessionStorage.removeItem("admin-sid"); sid = ""; location.hash = ""; location.reload();
+};
+(async () => {
+  const m = /^#keep=([0-9a-f]{32})$/.exec(location.hash);    // arrived from the old address after a LAN change
+  if (m) { sid = m[1]; sessionStorage.setItem("admin-sid", sid); history.replaceState(null, "", location.pathname); }
+  if (!sid) await relogin();
+  else await call("session", "access", {scope: "ubus", object: "file", function: "exec"}).then(r => r.access || relogin(), () => relogin());
+  $("tabs").hidden = false; $("logout").hidden = false;
+  call("system", "board").then(b => { $("who").textContent = `${b.hostname} · ${b.model}`; }).catch(() => {});
+  try { if ((await helper("status")).startsWith("pending")) await pendingDialog(); } catch (e) { /* helper missing: page still works read-only */ }
+  addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>
