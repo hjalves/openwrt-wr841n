@@ -10,8 +10,12 @@
  * a few days, hourly summaries in RAM for a year and, optionally, the hourly
  * summaries on flash in compressed monthly files (13 months kept).
  *
- * Only the router's existing shared libraries are used: libubus, libubox and
- * uClibc.
+ * Optionally, each accepted upload is also repeated, unchanged, to other
+ * servers (plain HTTP POST; the router has no TLS), without ever blocking
+ * the receiving side.
+ *
+ * Only the router's existing shared libraries are used: libubus, libubox,
+ * libm and uClibc.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -33,6 +37,8 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
+#include <netdb.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -858,6 +864,9 @@ static void save_timer_cb(struct uloop_timeout *t)
 	uloop_timeout_set(t, cfg_save_every * 1000);
 }
 
+static unsigned nfwds;                     /* forwarding targets (below) */
+static void fwd_submit(const char *body);
+
 /* ------------------------------------------------------------------ */
 /* The station's uploads: a small HTTP server                          */
 /* ------------------------------------------------------------------ */
@@ -1044,6 +1053,7 @@ static void conn_request(struct conn *c, char *body)
 	uint32_t now = (uint32_t)time(NULL);
 	struct sample s;
 	const char *err;
+	char *raw = NULL;
 
 	if (strncmp(c->buf, "POST ", 5)) {
 		reject(c, "405 Method Not Allowed", "not a POST");
@@ -1053,17 +1063,25 @@ static void conn_request(struct conn *c, char *body)
 		reject(c, "403 Forbidden", "upload from an address other than the station's");
 		return;
 	}
-	if (now < MIN_VALID_TIME) {
-		snprintf(last_error, sizeof(last_error), "system clock not set (waiting for NTP)");
-		conn_reply(c, "200 OK");
-		return;
-	}
+	if (nfwds)
+		raw = strdup(body);  /* parsing decodes the body in place */
 	if ((err = parse_upload(body, &s, now))) {
+		free(raw);
 		reject(c, err[0] == 'w' ? "403 Forbidden" : "400 Bad Request", err);
 		return;
 	}
-	if (fine.count && now - ring_at(&fine, fine.count - 1)->time < MIN_GAP) {
+	if (fine.count && now >= MIN_VALID_TIME && now - ring_at(&fine, fine.count - 1)->time < MIN_GAP) {
+		free(raw);
 		conn_reply(c, "200 OK");  /* a retry of the previous upload */
+		return;
+	}
+	if (raw) {
+		fwd_submit(raw);  /* the receivers can rely on the station's own dateutc */
+		free(raw);
+	}
+	if (now < MIN_VALID_TIME) {
+		snprintf(last_error, sizeof(last_error), "system clock not set (waiting for NTP)");
+		conn_reply(c, "200 OK");
 		return;
 	}
 	rain_base = s.rain_total;
@@ -1152,6 +1170,309 @@ static void listen_cb(struct uloop_fd *fd, unsigned int events)
 		c->timeout.cb = conn_timeout_cb;
 		uloop_fd_add(&c->fd, ULOOP_READ);
 		uloop_timeout_set(&c->timeout, REQ_TIMEOUT_MS);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Repeating uploads to other servers (optional)                       */
+/* ------------------------------------------------------------------ */
+/*
+ * Each target gets the station's form body exactly as received, by plain
+ * HTTP POST. Per target there is at most one request in flight and one
+ * upload waiting (the newest; an older waiting one is dropped). DNS lookups
+ * run in a short-lived child process, so a slow or dead resolver (LTE down)
+ * never stalls the receiving side or ubus. Addresses are looked up again
+ * every FWD_DNS_TTL seconds, or after a failed connection.
+ */
+#define FWD_MAX          4
+#define FWD_TIMEOUT_MS   15000
+#define FWD_DNS_TTL      600
+
+struct fwd {
+	const char *url;
+	char host[128], port[8], path[256];
+	struct in_addr addr;
+	uint32_t addr_time;
+	bool have_addr;
+	struct uloop_process resolver;
+	struct uloop_fd rfd;            /* pipe from the resolver child */
+	bool resolving;
+	struct uloop_fd fd;             /* the HTTP request */
+	struct uloop_timeout timeout;
+	bool busy, writing;
+	char *req;
+	size_t req_len, sent;
+	char resp[64];
+	size_t resp_len;
+	char *pending;                  /* body waiting to be sent */
+	uint32_t ok, failed, dropped, last_time;
+	int last_status;
+	char last_error[80];
+};
+
+static struct fwd fwds[FWD_MAX];
+
+static bool fwd_parse_url(struct fwd *f, const char *url)
+{
+	const char *h, *slash, *colon;
+	size_t hl;
+
+	if (strncmp(url, "http://", 7))
+		return false;  /* https needs TLS, which this router doesn't have */
+	h = url + 7;
+	slash = strchr(h, '/');
+	hl = slash ? (size_t)(slash - h) : strlen(h);
+	colon = memchr(h, ':', hl);
+	if (!hl || (colon ? (size_t)(colon - h) : hl) >= sizeof(f->host))
+		return false;
+	snprintf(f->host, sizeof(f->host), "%.*s", (int)(colon ? colon - h : (long)hl), h);
+	snprintf(f->port, sizeof(f->port), "%.*s", colon ? (int)(hl - (size_t)(colon - h) - 1) : 2, colon ? colon + 1 : "80");
+	if (!f->port[0] || strspn(f->port, "0123456789") != strlen(f->port) || atoi(f->port) < 1 || atoi(f->port) > 65535)
+		return false;
+	snprintf(f->path, sizeof(f->path), "%s", slash ? slash : "/");
+	f->url = url;
+	return true;
+}
+
+static void fwd_kick(struct fwd *f);
+
+static void fwd_fail(struct fwd *f, const char *what, bool forget_addr)
+{
+	f->failed++;
+	f->last_status = 0;
+	snprintf(f->last_error, sizeof(f->last_error), "%s", what);
+	if (forget_addr)
+		f->have_addr = false;  /* the address may have changed: look it up again */
+}
+
+static void fwd_close(struct fwd *f)
+{
+	uloop_timeout_cancel(&f->timeout);
+	if (f->fd.fd >= 0) {
+		uloop_fd_delete(&f->fd);
+		close(f->fd.fd);
+		f->fd.fd = -1;
+	}
+	free(f->req);
+	f->req = NULL;
+	f->busy = false;
+}
+
+static void fwd_done(struct fwd *f)
+{
+	fwd_close(f);
+	fwd_kick(f);  /* a newer upload may be waiting */
+}
+
+static void fwd_timeout_cb(struct uloop_timeout *t)
+{
+	struct fwd *f = container_of(t, struct fwd, timeout);
+
+	fwd_fail(f, "no answer within 15 s", true);
+	fwd_done(f);
+}
+
+static void fwd_fd_cb(struct uloop_fd *u, unsigned int events)
+{
+	struct fwd *f = container_of(u, struct fwd, fd);
+	ssize_t r;
+
+	(void)events;
+	if (f->writing) {
+		int err = 0;
+		socklen_t el = sizeof(err);
+
+		if (!f->sent && (getsockopt(u->fd, SOL_SOCKET, SO_ERROR, &err, &el) || err)) {
+			fwd_fail(f, err ? strerror(err) : "connect failed", true);
+			fwd_done(f);
+			return;
+		}
+		r = send(u->fd, f->req + f->sent, f->req_len - f->sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+		if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+			fwd_fail(f, strerror(errno), true);
+			fwd_done(f);
+			return;
+		}
+		if (r > 0)
+			f->sent += (size_t)r;
+		if (f->sent == f->req_len) {
+			f->writing = false;
+			uloop_fd_delete(u);
+			uloop_fd_add(u, ULOOP_READ);
+		}
+		return;
+	}
+	/* Only the status line matters: "HTTP/1.x NNN ..." */
+	while ((r = recv(u->fd, f->resp + f->resp_len, sizeof(f->resp) - 1 - f->resp_len, MSG_DONTWAIT)) > 0) {
+		f->resp_len += (size_t)r;
+		f->resp[f->resp_len] = '\0';
+		if (strstr(f->resp, "\r\n") || f->resp_len == sizeof(f->resp) - 1)
+			break;
+	}
+	if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && !strstr(f->resp, "\r\n") && f->resp_len < sizeof(f->resp) - 1)
+		return;  /* more to come */
+	{
+		int st = 0;
+
+		if (sscanf(f->resp, "HTTP/%*d.%*d %d", &st) != 1) {
+			fwd_fail(f, f->resp_len ? "unrecognised reply" : "connection closed without a reply", false);
+		} else if (st >= 200 && st < 300) {
+			f->ok++;
+			f->last_status = st;
+			f->last_time = (uint32_t)time(NULL);
+			f->last_error[0] = '\0';
+		} else {
+			char e[80];
+
+			snprintf(e, sizeof(e), "server answered %d", st);
+			fwd_fail(f, e, false);
+			f->last_status = st;
+		}
+	}
+	fwd_done(f);
+}
+
+static void fwd_send(struct fwd *f)
+{
+	struct sockaddr_in a = { .sin_family = AF_INET };
+	char *body = f->pending;
+	size_t bl = strlen(body);
+	int s, n;
+
+	f->pending = NULL;
+	f->req_len = 0;
+	f->req = malloc(512 + bl);
+	if (!f->req) {
+		free(body);
+		return;
+	}
+	n = snprintf(f->req, 512, "POST %s HTTP/1.1\r\nHost: %s%s%s\r\nUser-Agent: weatherd\r\n"
+	             "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %zu\r\n"
+	             "Connection: close\r\n\r\n", f->path, f->host, strcmp(f->port, "80") ? ":" : "",
+	             strcmp(f->port, "80") ? f->port : "", bl);
+	memcpy(f->req + n, body, bl);
+	f->req_len = (size_t)n + bl;
+	free(body);
+	f->sent = f->resp_len = 0;
+	f->resp[0] = '\0';
+	a.sin_addr = f->addr;
+	a.sin_port = htons((uint16_t)atoi(f->port));
+	s = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (s < 0 || (connect(s, (struct sockaddr *)&a, sizeof(a)) < 0 && errno != EINPROGRESS)) {
+		fwd_fail(f, strerror(errno), true);
+		if (s >= 0)
+			close(s);
+		free(f->req);
+		f->req = NULL;
+		return;
+	}
+	f->busy = f->writing = true;
+	f->fd.fd = s;
+	f->fd.cb = fwd_fd_cb;
+	uloop_fd_add(&f->fd, ULOOP_WRITE);
+	f->timeout.cb = fwd_timeout_cb;
+	uloop_timeout_set(&f->timeout, FWD_TIMEOUT_MS);
+}
+
+/* The resolver child's answer: 4 bytes of IPv4 address, or nothing. */
+static void fwd_rfd_cb(struct uloop_fd *u, unsigned int events)
+{
+	struct fwd *f = container_of(u, struct fwd, rfd);
+	struct in_addr a;
+	ssize_t r = read(u->fd, &a, sizeof(a));
+
+	(void)events;
+	if (r < 0 && (errno == EAGAIN || errno == EINTR))
+		return;
+	uloop_fd_delete(u);
+	close(u->fd);
+	u->fd = -1;
+	f->resolving = false;
+	if (r == (ssize_t)sizeof(a)) {
+		f->addr = a;
+		f->have_addr = true;
+		f->addr_time = (uint32_t)time(NULL);
+		fwd_kick(f);
+	} else {
+		snprintf(f->last_error, sizeof(f->last_error), "cannot look up %.60s", f->host);
+		if (f->pending) {  /* nothing can be sent until the next upload retries the lookup */
+			free(f->pending);
+			f->pending = NULL;
+			f->dropped++;
+		}
+	}
+}
+
+static void fwd_reaped(struct uloop_process *p, int status)
+{
+	(void)p; (void)status;
+}
+
+static void fwd_resolve(struct fwd *f)
+{
+	int pfd[2];
+	pid_t pid;
+
+	if (pipe(pfd) < 0)
+		return;
+	pid = fork();
+	if (pid < 0) {
+		close(pfd[0]);
+		close(pfd[1]);
+		return;
+	}
+	if (!pid) {  /* child: one blocking lookup, then exit */
+		struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+
+		close(pfd[0]);
+		alarm(30);
+		if (!getaddrinfo(f->host, NULL, &hints, &res) && res) {
+			struct in_addr a = ((struct sockaddr_in *)res->ai_addr)->sin_addr;
+
+			if (write(pfd[1], &a, sizeof(a)) != (ssize_t)sizeof(a))
+				_exit(1);
+		}
+		_exit(0);
+	}
+	close(pfd[1]);
+	f->resolving = true;
+	f->resolver.pid = pid;
+	f->resolver.cb = fwd_reaped;
+	uloop_process_add(&f->resolver);
+	f->rfd.fd = pfd[0];
+	f->rfd.cb = fwd_rfd_cb;
+	fcntl(pfd[0], F_SETFD, FD_CLOEXEC);
+	uloop_fd_add(&f->rfd, ULOOP_READ);
+}
+
+static void fwd_kick(struct fwd *f)
+{
+	if (!f->pending || f->busy || f->resolving)
+		return;
+	if (!f->have_addr || (uint32_t)time(NULL) - f->addr_time > FWD_DNS_TTL) {
+		fwd_resolve(f);
+		return;
+	}
+	fwd_send(f);
+}
+
+/* Queue an accepted upload's original body for every target. */
+static void fwd_submit(const char *body)
+{
+	unsigned i;
+
+	for (i = 0; i < nfwds; i++) {
+		struct fwd *f = &fwds[i];
+		char *copy = strdup(body);
+
+		if (!copy)
+			continue;
+		if (f->pending) {
+			free(f->pending);
+			f->dropped++;
+		}
+		f->pending = copy;
+		fwd_kick(f);
 	}
 }
 
@@ -1349,6 +1670,30 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_string(&b, "solar", "W/m²");
 	blobmsg_add_string(&b, "uv", "index");
 	blobmsg_close_table(&b, t);
+	if (nfwds) {
+		void *a = blobmsg_open_array(&b, "forward");
+		unsigned i;
+
+		for (i = 0; i < nfwds; i++) {
+			const struct fwd *f = &fwds[i];
+
+			t = blobmsg_open_table(&b, NULL);
+			blobmsg_add_string(&b, "url", f->url);
+			add_i(&b, "ok", (int)f->ok);
+			add_i(&b, "failed", (int)f->failed);
+			add_i(&b, "dropped", (int)f->dropped);
+			if (f->last_status)
+				add_i(&b, "last_status", f->last_status);
+			if (f->last_time)
+				add_i(&b, "last_ok", (int)f->last_time);
+			if (f->last_error[0])
+				blobmsg_add_string(&b, "last_error", f->last_error);
+			if (f->have_addr)
+				blobmsg_add_string(&b, "address", inet_ntoa(f->addr));
+			blobmsg_close_table(&b, t);
+		}
+		blobmsg_close_array(&b, a);
+	}
 	if (cfg_flash_dir || flash_error[0]) {
 		unsigned months[64], n = cfg_flash_dir ? flash_months(months, 64) : 0, i;
 		uint64_t bytes = 0;
@@ -1434,6 +1779,7 @@ static void usage(const char *prog)
 		"  -S seconds   also save the history files this often (default: exit only)\n"
 		"  -D dir       keep the hourly history on flash in dir (compressed, monthly files)\n"
 		"  -E seconds   append to the flash history this often (default 86400)\n"
+		"  -u URL       also repeat each accepted upload to this http:// URL (repeatable, up to 4)\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
 }
@@ -1443,7 +1789,7 @@ int main(int argc, char **argv)
 	static char coarse_default[PATH_MAX];
 	int opt;
 
-	while ((opt = getopt(argc, argv, "p:a:k:n:c:N:f:F:S:D:E:s:h")) != -1) {
+	while ((opt = getopt(argc, argv, "p:a:k:n:c:N:f:F:S:D:E:u:s:h")) != -1) {
 		switch (opt) {
 		case 'p': cfg_port = optarg; parse_uint(optarg, "port", 1, 65535); break;
 		case 'a': cfg_station = *optarg ? optarg : NULL; break;
@@ -1457,6 +1803,15 @@ int main(int argc, char **argv)
 		case 'D': cfg_flash_dir = *optarg ? optarg : NULL; break;
 		case 'E': cfg_flash_every = parse_uint(optarg, "flash interval", 300, 30 * 86400); break;
 		case 's': cfg_socket = optarg; break;
+		case 'u':
+			if (nfwds == FWD_MAX || !fwd_parse_url(&fwds[nfwds], optarg)) {
+				fprintf(stderr, "%s: %s\n", optarg, nfwds == FWD_MAX ? "at most 4 forward URLs" :
+				        "not a usable http:// URL (https isn't supported)");
+				return 2;
+			}
+			fwds[nfwds].fd.fd = fwds[nfwds].rfd.fd = -1;
+			nfwds++;
+			break;
 		default: usage(argv[0]);
 		}
 	}
@@ -1505,6 +1860,12 @@ int main(int argc, char **argv)
 	if ((fine.state || coarse.state) && cfg_save_every) {
 		save_timer.cb = save_timer_cb;
 		uloop_timeout_set(&save_timer, cfg_save_every * 1000);
+	}
+	{
+		unsigned i;
+
+		for (i = 0; i < nfwds; i++)
+			syslog(LOG_INFO, "repeating uploads to %s", fwds[i].url);
 	}
 	syslog(LOG_INFO, "listening on port %s for %s (passkey %s); keeping %u uploads, %u summaries of %us",
 	       cfg_port, cfg_station ? cfg_station : "any address", cfg_passkey ? "checked" : "not checked",

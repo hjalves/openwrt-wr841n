@@ -4,7 +4,7 @@ Receives the weather station's uploads on the router and keeps their history: th
 
 | | |
 |---|---|
-| Daemon | `weatherd`, 36 KiB stripped |
+| Daemon | `weatherd`, 40 KiB stripped |
 | Links to | only libraries already on the router: `libubus`, `libubox`, `libm`, uClibc |
 | Page | `/www/weather.html`, 28 KB (10 KB gzipped) |
 | RAM | about 0.9 MiB RSS at start, much of it shared libraries. The full history adds about 600 KiB as it fills: 44 bytes per sample, 4320 uploads and 9600 hourly summaries |
@@ -41,12 +41,28 @@ Values arrive in US units (°F, inHg, mph, in). weatherd stores them in metric:
 ## Which uploads are accepted
 
 - **Method:** only `POST` requests, at most 4 KB, completed within 5 seconds.
-- **Sender:** only from the configured station address (`station`), and only with its `PASSKEY` (`passkey`). Either check is skipped if left empty. On the router both are set: the passkey was captured from one of the station's own uploads and written straight into `/etc/config/weatherd`, so it isn't stored anywhere else.
+- **Sender:** only from the configured station address (`station`), and only with its `PASSKEY` (`passkey`). Either check is skipped if left empty. Both are set in the default config. The passkey isn't secret: it's an ID derived from the station's MAC, and the station sends it in every upload.
 - **Values:** checked against physical ranges (−73 to 93 °C, 15 to 35 inHg, and so on). Anything out of range or not a number is treated as missing.
 - **Retries:** an upload within 10 s of the previous one is answered `200` but ignored.
 - **Without a clock:** uploads are answered `200` but not stored until the router's clock is set (NTP).
 
 This is plain HTTP on the LAN, as the station sends it: the address and passkey checks keep out mistakes and casual fakes, not a determined attacker on the LAN.
+
+## Repeating uploads to other servers
+
+Each accepted upload can also be **repeated, unchanged, to other servers** (`forward`, up to 4 URLs). The router currently repeats to `http://wx.hjalves.dev/upload/`.
+- **What is sent:** the station's form body exactly as received, PASSKEY included, as an HTTP `POST` with `Content-Type: application/x-www-form-urlencoded`. Any 2xx answer counts as delivered.
+- **Plain `http://` only:** the router has no TLS library, so `https://` URLs are refused at start.
+- **What's forwarded:**
+  - only uploads that passed the address and PASSKEY checks;
+  - including those that arrive before the router's clock is set: those aren't stored locally, but the receiver can use the station's own `dateutc`;
+  - quick retries within 10 s are not forwarded twice.
+- **Never in the way:**
+  - per server, at most one request is in flight, and only the newest upload waits. An older waiting one is dropped and counted;
+  - a request that gets no answer within 15 s is abandoned;
+  - DNS lookups run in a short-lived child process, so a slow or dead resolver (for example with LTE down) can't delay receiving, the local history or ubus. Addresses are looked up again every 10 minutes, or after a failed connection.
+- **No retry queue:** an upload that couldn't be delivered isn't sent again later. The next one follows a minute later anyway.
+- **`status` reports per server:** delivered (`ok`), `failed`, `dropped`, the last HTTP status, the last error, and the address in use.
 
 ## History
 
@@ -96,7 +112,7 @@ This is plain HTTP on the LAN, as the station sends it: the address and passkey 
 |---|---|---|
 | `latest` | none | the newest upload |
 | `query` | `from`, `to` (Unix time; negative = seconds before now), `limit` (default 1000, at most 4000), `tier` (`auto`, `fine` or `coarse`) | samples, oldest first. `auto` gives hourly summaries before the fine tier begins, then every upload. `truncated: true` means more remain: continue from the last time + 1 |
-| `status` | none | port, station address, whether the passkey is checked, station model and type, both tiers' sizes and time spans, accepted and rejected uploads, last error, the units below, and the flash history's state |
+| `status` | none | port, station address, whether the passkey is checked, station model and type, both tiers' sizes and time spans, accepted and rejected uploads, last error, the units below, the forwarding targets' counters, and the flash history's state |
 
 Sample fields, as scaled integers, since this ubus has no floating point:
 - **Temperature, 0.1 °C:** `temp`, `temp_min`, `temp_max`, `temp_in`.
@@ -145,12 +161,13 @@ Light and dark mode.
 |---|---|---|
 | `port` | `8080` | TCP port the station posts to |
 | `station` | `192.168.0.200` | accepted sender address; empty = any |
-| `passkey` | (empty) | required `PASSKEY`; empty = not checked |
+| `passkey` | the station's | required `PASSKEY`; empty = not checked. Not secret: an ID derived from the station's MAC |
 | `history` | `4320` | uploads kept in RAM |
 | `coarse_interval`, `coarse_history` | `3600`, `9600` | summary period (s) and how many are kept |
 | `state_file` | `/tmp/weatherd.dat` | RAM tiers' file |
 | `save_every` | `0` | also save the RAM tiers every N s |
 | `flash_dir`, `flash_every` | `/srv/weatherd`, `86400` | hourly history on flash; empty = off |
+| `forward` | `http://wx.hjalves.dev/upload/` | UCI list: also repeat each accepted upload to these `http://` URLs (up to 4) |
 
 ## Build and install
 
@@ -165,7 +182,6 @@ On the router:
 cd /tmp
 cp weatherd /usr/sbin/ && cp weatherd.init /etc/init.d/weatherd && chmod 755 /usr/sbin/weatherd /etc/init.d/weatherd
 cp weatherd.config /etc/config/weatherd && cp weatherd.acl.json /usr/share/rpcd/acl.d/weatherd.json && cp weather.html /www/
-uci set weatherd.main.passkey='<the station PASSKEY>' && uci commit weatherd
 /etc/init.d/weatherd enable && /etc/init.d/weatherd start
 /etc/init.d/rpcd restart            # loads the ACL; logs out admin sessions
 ```
@@ -189,6 +205,14 @@ The firmware build (`firmware/build.sh`) includes weatherd, its page and ACL fro
   - **Fuzzing:** 3,000 random malformed uploads (bad numbers, `nan`, huge values, broken escapes, random bytes), with no crash.
 - **Flash size:** a Python copy of the encoder, run over a synthetic year of smooth hourly weather, gave 20.7 bytes per hour, block headers included (177 KiB a year). The router's JFFS2 compresses it further.
 - **Page:** checked against a mock with 13 months of hourly and 3 days of per-upload data. Every preset, the tooltip, keyboard navigation, light and dark mode and a 390 px phone layout (no sideways scrolling) worked, with no script errors.
+- **Forwarding (2026-11-17),** natively with AddressSanitizer and UBSan, against four local fake servers. No sanitizer reports.
+  - **Normal server, reached by name:** received all 8 test uploads byte-for-byte identical and in order, as a form POST to its path with the right Host header.
+  - **A server answering 500:** each upload counted as failed, "server answered 500".
+  - **A server that never answers:** abandoned after 15 s. Newer uploads replaced the waiting one, so 6 were dropped rather than queued.
+  - **An unresolvable name:** "cannot look up …".
+  - **Receiving stayed fast:** every station upload was answered within 4 ms, even with a server hanging.
+  - **Invalid URLs** (`https://`, `ftp://`, no host, bad port) were refused at start.
+  - **On the router:** uploads are repeated to `http://wx.hjalves.dev/upload/`, which answers 204.
 - **On the router:**
   - started with the station address and passkey checks on;
   - the station's uploads are accepted;

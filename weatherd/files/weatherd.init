@@ -6,6 +6,10 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/sbin/weatherd
 
+add_forward() {
+	procd_append_param command -u "$1"
+}
+
 start_service() {
 	local port station passkey history coarse_interval coarse_history
 	local state_file coarse_state_file save_every flash_dir flash_every
@@ -31,6 +35,7 @@ start_service() {
 	[ -n "$coarse_state_file" ] && procd_append_param command -F "$coarse_state_file"
 	[ "$save_every" -gt 0 ] 2>/dev/null && procd_append_param command -S "$save_every"
 	[ -n "$flash_dir" ] && procd_append_param command -D "$flash_dir" -E "$flash_every"
+	config_list_foreach main forward add_forward
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
 }
