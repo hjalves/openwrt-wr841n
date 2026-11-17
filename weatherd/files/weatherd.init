@@ -1,0 +1,40 @@
+#!/bin/sh /etc/rc.common
+# procd service for weatherd (weather station upload receiver and history)
+
+START=95
+STOP=10
+USE_PROCD=1
+PROG=/usr/sbin/weatherd
+
+start_service() {
+	local port station passkey history coarse_interval coarse_history
+	local state_file coarse_state_file save_every flash_dir flash_every
+
+	config_load weatherd
+	config_get port main port 8080
+	config_get station main station
+	config_get passkey main passkey
+	config_get history main history 4320
+	config_get coarse_interval main coarse_interval 3600
+	config_get coarse_history main coarse_history 9600
+	config_get state_file main state_file /tmp/weatherd.dat
+	config_get coarse_state_file main coarse_state_file
+	config_get save_every main save_every 0
+	config_get flash_dir main flash_dir
+	config_get flash_every main flash_every 86400
+
+	procd_open_instance
+	procd_set_param command "$PROG" -p "$port" -n "$history" -c "$coarse_interval" -N "$coarse_history"
+	[ -n "$station" ] && procd_append_param command -a "$station"
+	[ -n "$passkey" ] && procd_append_param command -k "$passkey"
+	[ -n "$state_file" ] && procd_append_param command -f "$state_file"
+	[ -n "$coarse_state_file" ] && procd_append_param command -F "$coarse_state_file"
+	[ "$save_every" -gt 0 ] 2>/dev/null && procd_append_param command -S "$save_every"
+	[ -n "$flash_dir" ] && procd_append_param command -D "$flash_dir" -E "$flash_every"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger weatherd
+}

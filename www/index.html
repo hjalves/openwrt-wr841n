@@ -49,6 +49,11 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <p>Every device seen on the LAN, with new ones highlighted.</p>
       <div class="live" id="liveDev"></div>
     </a>
+    <a class="card" href="/weather.html">
+      <h2>Weather</h2>
+      <p>Temperature, humidity, pressure, wind, rain and sun from the weather station.</p>
+      <div class="live" id="liveWx"></div>
+    </a>
   </nav>
   <p class="foot" id="luci" hidden>Classic admin interface: <a href="/cgi-bin/luci">LuCI</a> (firewall and everything else)</p>
 </main>
@@ -93,6 +98,23 @@ fetch("/cgi-bin/luci", {method: "HEAD", cache: "no-store"}).then(r => { if (r.st
     const s = j.result[1];
     document.getElementById("liveDev").textContent =
       `${s.online} online · ${s.devices} known` + (s.new ? ` · ${s.new} new in the last 24 h` : "");
+  } catch (e) { /* summary is optional */ }
+})();
+// Weather now, from weatherd; stays empty if it isn't running or has no data yet.
+(async () => {
+  try {
+    const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: 3, method: "call",
+        params: ["00000000000000000000000000000000", "weather", "latest", {}]})});
+    const j = await r.json();
+    if (!j.result || j.result[0] !== 0) return;
+    const s = j.result[1].sample, f = (v, d) => v.toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+    const parts = [];
+    if (s.temp != null) parts.push(`${f(s.temp / 10, 1)} °C`);
+    if (s.hum != null) parts.push(`${s.hum} % humidity`);
+    if (s.press != null) parts.push(`${f(s.press / 10, 0)} hPa`);
+    if (s.wind != null) parts.push(`wind ${f(s.wind * 0.36, 0)} km/h`);
+    document.getElementById("liveWx").textContent = parts.join(" · ");
   } catch (e) { /* summary is optional */ }
 })();
 </script>

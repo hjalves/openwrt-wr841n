@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the openwrt-wr841n firmware for the TP-Link TL-WR841N/ND v9 with the
 # OpenWrt 15.05.1 Image Builder: no LuCI/Lua, no IPv6, no PPP, no dnsmasq; with the
-# admin page, huawei-trafficd, lanwatch and tinymdns built in.
+# admin page, huawei-trafficd, lanwatch, tinymdns and weatherd built in.
 #   firmware/build.sh [IMAGEBUILDER_DIR]
 # Output: firmware/bin/ (git-ignored). Nothing is flashed.
 set -e
@@ -20,7 +20,7 @@ PACKAGES="-dnsmasq -ip6tables -ppp -ppp-mod-pppoe -odhcpd -odhcp6c
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -a firmware/files/. "$STAGE/"
 inst() { mode=$1 src=$2 dst=$STAGE$3; mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; chmod "$mode" "$dst"; }
-for d in huawei-trafficd lanwatch tinymdns; do
+for d in huawei-trafficd lanwatch tinymdns weatherd; do
 	inst 755 $d/$d /usr/sbin/$d
 	inst 755 $d/files/$d.init /etc/init.d/$d
 	inst 644 $d/files/$d.config /etc/config/$d
@@ -30,9 +30,11 @@ for d in huawei-trafficd lanwatch tinymdns; do
 done
 inst 644 huawei-trafficd/files/huawei-trafficd.acl.json /usr/share/rpcd/acl.d/huawei-trafficd.json
 inst 644 lanwatch/files/lanwatch.acl.json /usr/share/rpcd/acl.d/lanwatch.json
+inst 644 weatherd/files/weatherd.acl.json /usr/share/rpcd/acl.d/weatherd.json
 inst 644 lanwatch/files/oui.bin /usr/share/lanwatch/oui.bin
 inst 644 huawei-trafficd/www/traffic.html /www/traffic.html
 inst 644 lanwatch/www/devices.html /www/devices.html
+inst 644 weatherd/www/weather.html /www/weather.html
 inst 644 www/index.html /www/index.html
 inst 644 www/favicon.svg /www/favicon.svg
 inst 644 www/favicon-32.png /www/favicon-32.png

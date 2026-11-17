@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>Weather</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<style>
+:root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--wash:rgba(11,11,11,.06);--series-1:#2a78d6;--good:#0ca30c;--critical:#d03b3b;--warning:#fab219}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--text-primary:#f0efec;--text-secondary:#c3c2b7;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--wash:rgba(255,255,255,.07);--series-1:#3987e5}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page)}
+.viz-root{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text-primary);max-width:1100px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:20px;font-weight:600;margin:0}
+h2{font-size:14px;font-weight:600;margin:0 0 2px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-bottom:16px}
+.back{display:inline-block;color:var(--text-secondary);text-decoration:none;font-size:13px;margin-bottom:2px}
+.back:hover{color:var(--text-primary);text-decoration:underline}
+.status{margin:0;color:var(--text-secondary);font-size:13px}
+.status b{font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.tile,.card{background:var(--surface-1);border:1px solid var(--border);border-radius:10px}
+.tile{padding:12px 14px}
+.tile .label{color:var(--text-secondary);font-size:13px}
+.tile .value{font-size:22px;font-weight:600;margin-top:2px;white-space:nowrap}
+.tile .sub{color:var(--muted);font-size:12px;margin-top:2px}
+.tile .value .dot{width:10px;height:10px;vertical-align:2px}
+.arrow{display:inline-block;margin-left:6px;font-weight:400;color:var(--text-secondary)}
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 12px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface-1)}
+.seg button{border:0;border-right:1px solid var(--border);background:none;color:var(--text-secondary);font:inherit;padding:6px 11px;cursor:pointer}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--wash)}
+.seg button[aria-pressed=true]{color:var(--text-primary);font-weight:600;background:var(--wash)}
+.custom{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--text-secondary);font-size:13px}
+input,.btn{font:inherit;font-size:13px;color:var(--text-primary);background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:5px 8px}
+.btn{cursor:pointer}.btn:hover{background:var(--wash)}
+button:focus-visible,input:focus-visible,.chart:focus-visible,.back:focus-visible{outline:2px solid var(--series-1);outline-offset:2px}
+.card{padding:14px 14px 8px;margin-bottom:12px;transition:opacity .15s}
+.loading .card{opacity:.5}
+.card .note{color:var(--muted);font-size:12px;margin:0 0 6px}
+.chart{position:relative;outline:none}
+.chart svg{display:block;width:100%;overflow:visible}
+.chart text{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.chart .grid{stroke:var(--grid);stroke-width:1;shape-rendering:crispEdges}
+.chart .base{stroke:var(--axis);stroke-width:1;shape-rendering:crispEdges}
+.chart .band{fill:var(--wash)}
+.chart .empty{fill:var(--text-secondary);font-size:13px}
+.chart .line{fill:none;stroke:var(--series-1);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .pt{fill:var(--series-1);stroke:var(--surface-1);stroke-width:2}
+.chart .range{fill:var(--series-1);fill-opacity:.12}
+.chart .bar{fill:var(--series-1)}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
+.tools .hint{color:var(--muted);font-size:12px}
+.tip{position:fixed;z-index:10;pointer-events:none;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);padding:8px 10px;font-size:12px;min-width:190px}
+.tip .t{color:var(--text-secondary);margin-bottom:4px}
+.tip .r{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.tip .r b{font-weight:600;font-size:13px}
+.tip .r span{color:var(--text-secondary)}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(2,1fr);gap:8px}.tile{padding:10px}.tile .value{font-size:18px}}
+</style>
+</head>
+<body>
+<main class="viz-root" id="root">
+<header>
+  <div><a class="back" href="/">← Router</a><h1>Weather</h1></div>
+  <p class="status" id="status" role="status">Loading…</p>
+</header>
+
+<section class="tiles" aria-label="Now">
+  <div class="tile"><div class="label">Temperature</div><div class="value" id="tT">–</div><div class="sub" id="tTSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Humidity</div><div class="value" id="tH">–</div><div class="sub" id="tHSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Pressure</div><div class="value" id="tP">–</div><div class="sub" id="tPSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Wind</div><div class="value" id="tW">–</div><div class="sub" id="tWSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Rain today</div><div class="value" id="tR">–</div><div class="sub" id="tRSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Sun</div><div class="value" id="tS">–</div><div class="sub" id="tSSub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Indoors</div><div class="value" id="tI">–</div><div class="sub" id="tISub">&nbsp;</div></div>
+  <div class="tile"><div class="label">Sensor battery</div><div class="value" id="tB">–</div><div class="sub" id="tBSub">&nbsp;</div></div>
+</section>
+
+<nav class="filters" aria-label="Time range">
+  <div class="seg" id="presets" role="group" aria-label="Preset ranges"></div>
+  <form class="custom" id="custom">
+    <label>From <input type="datetime-local" id="from" required></label>
+    <label>to <input type="datetime-local" id="to"></label>
+    <button class="btn" type="submit">Apply</button>
+  </form>
+</nav>
+
+<section class="card"><h2 id="hT">Temperature</h2><p class="note">Average per period; the light band runs from the lowest to the highest reading.</p><div class="chart" id="cT" tabindex="0" aria-describedby="kbd"></div></section>
+<section class="card"><h2 id="hH">Humidity</h2><p class="note">Relative humidity outdoors, average per period.</p><div class="chart" id="cH" tabindex="0" aria-describedby="kbd"></div></section>
+<section class="card"><h2 id="hP">Pressure</h2><p class="note">Relative (sea-level) pressure, average per period. Falling pressure often means worsening weather.</p><div class="chart" id="cP" tabindex="0" aria-describedby="kbd"></div></section>
+<section class="card"><h2 id="hW">Wind</h2><p class="note">Average wind speed per period; the light band reaches the strongest gust.</p><div class="chart" id="cW" tabindex="0" aria-describedby="kbd"></div></section>
+<section class="card"><h2 id="hR">Rain</h2><p class="note">Rain per period, from the station's rain counter.</p><div class="chart" id="cR" tabindex="0" aria-describedby="kbd"></div></section>
+<section class="card"><h2 id="hS">Sunshine</h2><p class="note">Solar radiation, average per period; the light band reaches the brightest reading. The tooltip adds the highest UV index.</p><div class="chart" id="cS" tabindex="0" aria-describedby="kbd"></div></section>
+
+<div class="tools">
+  <button class="btn" id="csvBtn">Download CSV (raw samples)</button>
+  <span class="hint" id="kbd">Hover a chart, or focus one and use ← → for details.</span>
+</div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const ANON = "00000000000000000000000000000000";
+const H = 3600, D = 86400;
+// label, span (s), bucket (s)
+const PRESETS = [["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H], ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
+const BUCKETS = [300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
+const CHARTS = ["cT", "cH", "cP", "cW", "cR", "cS"];
+const PAGE = 2000;
+
+let state = {preset: "24h"};
+let view = null, status = null, rpcId = 0, refreshTimer = 0, hoverIdx = -1;
+
+async function rpc(method, args) {
+  const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({jsonrpc: "2.0", id: ++rpcId, method: "call", params: [ANON, "weather", method, args || {}]})});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || "RPC error");
+  if (j.result[0] !== 0) throw new Error(j.result[0] === 9 ? "no data yet" : "ubus status " + j.result[0]);
+  return j.result[1] || {};
+}
+async function fetchSamples(from, to, tier) {
+  const out = [];
+  let args = {from, to, tier, limit: PAGE};
+  for (;;) {
+    const p = await rpc("query", args);
+    out.push(...p.samples);
+    if (!p.truncated || !p.samples.length) return out;
+    args = {...args, from: p.samples[p.samples.length - 1].time + 1};
+  }
+}
+
+// ---- units: the daemon sends scaled integers (status.units) ----
+const nf = (v, d) => v.toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
+const C = v => `${nf(v, 1)} °C`, KMH = v => `${nf(v, v < 10 ? 1 : 0)} km/h`, HPA = v => `${nf(v, 1)} hPa`;
+const MM = v => `${nf(v, v && v < 10 ? 1 : 0)} mm`, WM2 = v => `${nf(v, 0)} W/m²`;
+function dewPoint(t, rh) {  // Magnus formula, °C
+  const g = Math.log(Math.max(rh, 1) / 100) + 17.62 * t / (243.12 + t);
+  return 243.12 * g / (17.62 - g);
+}
+const arrow = dir => {  // points where the wind blows to; the reading is where it comes from
+  const s = document.createElement("span");
+  s.className = "arrow"; s.textContent = "↓"; s.style.transform = `rotate(${dir}deg)`;
+  s.setAttribute("aria-hidden", "true");
+  return s;
+};
+function ago(s) {
+  return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / H)} h ago`;
+}
+const dfmt = (t, o) => new Date(t * 1000).toLocaleString(undefined, o);
+const tTime = t => dfmt(t, {hour: "2-digit", minute: "2-digit"});
+const tDate = t => dfmt(t, {month: "short", day: "numeric"});
+function periodLabel(a, b) {
+  if (b - a >= D) return b - a > D ? `${tDate(a)} – ${tDate(b - 1)}` : dfmt(a, {weekday: "short", month: "short", day: "numeric", year: "numeric"});
+  return `${dfmt(a, {weekday: "short", month: "short", day: "numeric"})}, ${tTime(a)}–${tTime(b)}`;
+}
+const bucketName = b => ({300: "5 minutes", 900: "15 minutes", 1800: "30 minutes", 3600: "hour", 10800: "3 hours",
+  21600: "6 hours", 43200: "12 hours", 86400: "day", 604800: "week"})[b];
+
+// ---- bucketing: days and weeks follow the local calendar ----
+function tzOff(t) { return -new Date(t * 1000).getTimezoneOffset() * 60; }
+function bucketEdges(from, to, b) {
+  const e = [];
+  if (b < D) {
+    for (let t = Math.floor((from + tzOff(from)) / b) * b - tzOff(from); ; t += b) { e.push(t); if (t >= to) return e; }
+  }
+  const d = new Date(from * 1000);
+  d.setHours(0, 0, 0, 0);
+  if (b === 7 * D) d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  for (;;) { const t = d.getTime() / 1000; e.push(t); if (t >= to) return e; d.setDate(d.getDate() + b / D); }
+}
+// One bucket per period: averages weighted by each sample's upload count; extremes; rain summed.
+function buildBuckets(samples, from, to, b) {
+  const edges = bucketEdges(from, to, b), bk = [];
+  for (let i = 0; i + 1 < edges.length; i++) bk.push({t: edges[i], e: edges[i + 1], n: 0});
+  let j = 0;
+  const avg = ["temp", "hum", "press", "wind", "solar", "temp_in", "hum_in"];
+  for (const s of samples) {
+    if (s.time < from || s.time >= to) continue;
+    while (j < bk.length && bk[j].e <= s.time) j++;
+    if (j >= bk.length) break;
+    if (s.time < bk[j].t) continue;
+    const x = bk[j], w = s.n || 1;
+    x.n += w;
+    for (const k of avg) if (s[k] != null) { x[k + "W"] = (x[k + "W"] || 0) + w; x[k + "S"] = (x[k + "S"] || 0) + s[k] * w; }
+    if (s.temp_min != null) x.tmin = Math.min(x.tmin ?? Infinity, s.temp_min);
+    if (s.temp_max != null) x.tmax = Math.max(x.tmax ?? -Infinity, s.temp_max);
+    if (s.gust != null) x.gust = Math.max(x.gust ?? 0, s.gust);
+    if (s.solar_max != null) x.smax = Math.max(x.smax ?? 0, s.solar_max);
+    if (s.uv != null) x.uv = Math.max(x.uv ?? 0, s.uv);
+    if (s.rain_rate != null) x.rrate = Math.max(x.rrate ?? 0, s.rain_rate);
+    x.rain = (x.rain || 0) + (s.rain || 0);
+    if (s.dir != null && s.wind != null) {  // wind direction: vector average weighted by speed (+0.1 so calm still counts)
+      const r = s.dir * Math.PI / 180, m = (s.wind + 1) * w;
+      x.dx = (x.dx || 0) + Math.sin(r) * m; x.dy = (x.dy || 0) + Math.cos(r) * m;
+    }
+  }
+  for (const x of bk) {
+    for (const k of avg) x[k] = x[k + "W"] ? x[k + "S"] / x[k + "W"] : null;
+    // to display units
+    if (x.temp != null) x.temp /= 10; if (x.temp_in != null) x.temp_in /= 10;
+    if (x.tmin != null) x.tmin /= 10; if (x.tmax != null) x.tmax /= 10;
+    if (x.press != null) x.press /= 10;
+    if (x.wind != null) x.wind *= 0.36; if (x.gust != null) x.gust *= 0.36;
+    if (x.n) x.rain /= 100; else x.rain = null;
+    if (x.rrate != null) x.rrate /= 10;
+    x.dir = x.dx != null && (Math.abs(x.dx) > 1e-9 || Math.abs(x.dy) > 1e-9) ? (Math.round(Math.atan2(x.dx, x.dy) * 180 / Math.PI) + 360) % 360 : null;
+  }
+  return {bk, b};
+}
+
+// ---- charts ----
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+// Round axis ticks covering [lo, hi]; about 4 steps.
+function niceRange(lo, hi, zero) {
+  if (zero) lo = Math.min(0, lo);
+  if (!(hi > lo)) { hi = lo + 1; lo -= 1; }
+  const raw = (hi - lo) / 4, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= raw);
+  const t = [];
+  for (let v = Math.floor(lo / step) * step; v < hi + step * 0.999; v += step) t.push(Math.round(v * 1e6) / 1e6);
+  return t;
+}
+const STEPS = [300, 900, 1800, H, 2*H, 3*H, 6*H, 12*H, D, 2*D, 7*D, 14*D, 28*D];
+function xStep(n, b, w) { const m = Math.max(2, Math.floor(w / 80)); return STEPS.find(s => s >= b && s % b === 0 && n * b / s <= m) || 28 * D; }
+function onStep(t, i, b, step) {
+  if (b >= 7 * D) return i % (step / b) === 0;
+  const lt = t + tzOff(t);
+  return step % (7 * D) === 0 ? (lt - 4 * D) % step === 0 : lt % step === 0;
+}
+function xLabel(t, b, prev) {
+  if (b >= D) return tDate(t);
+  const lt = new Date(t * 1000);
+  return (lt.getHours() === 0 && lt.getMinutes() === 0) || prev == null ? tDate(t) : tTime(t);
+}
+// A line of k's average per period, an optional light band (lo..hi keys), or bars.
+function drawSeries(box, data, spec) {
+  box.textContent = "";
+  const W = Math.max(280, box.clientWidth), PH = spec.bars ? 110 : 140, AX = 22, ML = 58, MR = 16, MT = 8;
+  const n = data.bk.length, pw = W - ML - MR, slot = pw / n;
+  const vals = [];
+  for (const x of data.bk) for (const k of [spec.k, spec.lo, spec.hi]) if (k && x[k] != null) vals.push(x[k]);
+  const ticks = spec.fixed || niceRange(vals.length ? Math.min(...vals) : 0, vals.length ? Math.max(...vals, spec.minTop || 0) : 1, spec.zero);
+  const lo = ticks[0], top = ticks[ticks.length - 1];
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `${spec.name} per ${bucketName(data.b)}`}, box);
+  const y = v => MT + PH - (Math.min(Math.max(v, lo), top) - lo) / (top - lo) * PH;
+  for (const t of ticks) {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t === lo ? "base" : "grid"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, spec.tick(t));
+  }
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  let any = false;
+  if (spec.bars) {
+    const bw = Math.max(1, Math.min(24, slot - 2));
+    data.bk.forEach((x, i) => {
+      if (x[spec.k] == null) return;
+      any = true;
+      if (x[spec.k] <= 0) return;
+      const h = Math.max(1, MT + PH - y(x[spec.k])), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h, r = Math.min(4, bw / 2, h);
+      el("path", {class: "bar", d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
+    });
+  } else {
+    if (spec.hi) data.bk.forEach((x, i) => {
+      const a = x[spec.lo || spec.k], z = x[spec.hi];
+      if (a == null || z == null) return;
+      el("rect", {class: "range", x: ML + i * slot + 1, width: Math.max(1, slot - 2), y: y(z), height: Math.max(1, y(a) - y(z)), rx: 2}, svg);
+    });
+    let d = "", run = [];
+    const flush = () => { if (run.length === 1) el("circle", {class: "pt", cx: run[0][0], cy: run[0][1], r: 4}, svg); run = []; };
+    data.bk.forEach((x, i) => {
+      if (x[spec.k] == null) { flush(); return; }
+      any = true;
+      const p = [ML + i * slot + slot / 2, y(x[spec.k])];
+      d += (run.length ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1);
+      run.push(p);
+    });
+    flush();
+    if (d) el("path", {class: "line", d}, svg);
+  }
+  if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg, "No readings in this range");
+  const step = xStep(n, data.b, pw);
+  let prev = null;
+  data.bk.forEach((x, i) => {
+    if (!onStep(x.t, i, data.b, step)) return;
+    const cx = ML + i * slot + slot / 2;
+    if (cx < ML + 18 || cx > W - MR - 18) return;
+    el("text", {x: cx, y: MT + PH + 16, "text-anchor": "middle"}, svg, xLabel(x.t, data.b, prev));
+    prev = x.t;
+  });
+  const hit = el("rect", {x: ML, y: MT, width: pw, height: PH + AX, fill: "transparent"}, svg);
+  hit.addEventListener("pointermove", e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    setHover(Math.min(n - 1, Math.max(0, Math.floor((px - ML) / slot))), e.clientX, e.clientY);
+  });
+  hit.addEventListener("pointerleave", () => setHover(-1));
+  box._band = {band, ML, slot, svg, W};
+}
+const SPECS = {
+  cT: {name: "Temperature", k: "temp", lo: "tmin", hi: "tmax", tick: v => `${v} °C`},
+  cH: {name: "Humidity", k: "hum", fixed: [0, 25, 50, 75, 100], tick: v => `${v} %`},
+  cP: {name: "Pressure", k: "press", tick: v => `${v} hPa`},
+  cW: {name: "Wind", k: "wind", hi: "gust", zero: true, minTop: 10, tick: v => `${v} km/h`},
+  cR: {name: "Rain", k: "rain", bars: true, zero: true, minTop: 1, tick: v => `${v} mm`},
+  cS: {name: "Sunshine", k: "solar", hi: "smax", zero: true, minTop: 100, tick: v => `${v} W/m²`},
+};
+
+function setHover(i, cx, cy) {
+  hoverIdx = i;
+  const tip = $("tip");
+  for (const id of CHARTS) { const c = $(id)._band; if (c) c.band.setAttribute("x", i < 0 ? -999 : c.ML + i * c.slot); }
+  if (i < 0 || !view) { tip.hidden = true; return; }
+  const x = view.data.bk[i];
+  tip.textContent = "";
+  const row = (v, label) => {
+    const r = document.createElement("div"), b = document.createElement("b"), s = document.createElement("span");
+    r.className = "r"; b.textContent = v; s.textContent = label; r.append(b, s); tip.appendChild(r);
+  };
+  const t = document.createElement("div");
+  t.className = "t"; t.textContent = periodLabel(x.t, x.e); tip.appendChild(t);
+  if (!x.n) row("No data", "");
+  else {
+    if (x.temp != null) row(C(x.temp), x.tmin != null ? `avg · ${nf(x.tmin, 1)} to ${nf(x.tmax, 1)} °C` : "avg");
+    if (x.hum != null) row(`${Math.round(x.hum)} %`, x.temp != null ? `humidity · dew point ${C(dewPoint(x.temp, x.hum))}` : "humidity");
+    if (x.press != null) row(HPA(x.press), "pressure");
+    if (x.wind != null) row(KMH(x.wind), `wind avg · gusts ${KMH(x.gust || 0)}` + (x.dir != null ? ` · from ${x.dir}°` : ""));
+    if (x.rain != null) row(MM(x.rain), "rain" + (x.rrate ? ` · up to ${nf(x.rrate, 1)} mm/h` : ""));
+    if (x.solar != null) row(WM2(x.solar), `sun avg · peak ${WM2(x.smax || 0)}` + (x.uv != null ? ` · UV ${x.uv}` : ""));
+  }
+  tip.hidden = false;
+  if (cx == null) { const r = $(CHARTS[0]).getBoundingClientRect(); cx = r.left; cy = r.top + 40; }
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(innerWidth - w - 8, Math.max(8, cx + 14)) + "px";
+  tip.style.top = Math.min(innerHeight - h - 8, Math.max(8, cy + 14)) + "px";
+}
+for (const id of CHARTS) {
+  $(id).addEventListener("keydown", e => {
+    if (!view || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    e.preventDefault();
+    const n = view.data.bk.length, i = hoverIdx < 0 ? n - 1 : Math.min(n - 1, Math.max(0, hoverIdx + (e.key === "ArrowRight" ? 1 : -1)));
+    const r = $(id).getBoundingClientRect(), c = $(id)._band;
+    setHover(i, r.left + (c.ML + (i + .5) * c.slot) * r.width / c.W, r.top + 30);
+  });
+  $(id).addEventListener("blur", () => setHover(-1));
+}
+
+// ---- now ----
+const setText = (id, v) => { $(id).textContent = v; };
+function renderNow(latest, today, recent) {
+  const s = $("status");
+  s.textContent = "";
+  const dot = document.createElement("span"), b = document.createElement("b");
+  dot.className = "dot";
+  const age = latest ? Date.now() / 1000 - latest.time : Infinity;
+  dot.style.background = `var(${age < 300 ? "--good" : age < 1800 ? "--warning" : "--critical"})`;
+  b.textContent = latest ? (age < 300 ? "Receiving" : "No recent upload") : "No uploads yet";
+  s.append(dot, b, document.createTextNode((status.station_model ? ` · ${status.station_model.replace(/_.*/, "")}` : "") +
+    (latest ? ` · last upload ${ago(age)}` : status.last_error ? ` · ${status.last_error}` : "")));
+  if (!latest) return;
+  const L = latest;
+  setText("tT", L.temp != null ? C(L.temp / 10) : "–");
+  const tt = today.filter(x => x.temp != null);
+  setText("tTSub", tt.length ? `today ${nf(Math.min(...tt.map(x => x.temp_min)) / 10, 1)} to ${nf(Math.max(...tt.map(x => x.temp_max)) / 10, 1)} °C` : " ");
+  setText("tH", L.hum != null ? `${L.hum} %` : "–");
+  setText("tHSub", L.hum != null && L.temp != null ? `dew point ${C(dewPoint(L.temp / 10, L.hum))}` : " ");
+  setText("tP", L.press != null ? HPA(L.press / 10) : "–");
+  const old = recent.find(x => x.press != null && x.time <= L.time - 3 * H + 600);
+  setText("tPSub", old ? `${L.press >= old.press ? "+" : "−"}${nf(Math.abs(L.press - old.press) / 10, 1)} hPa in 3 h` : " ");
+  const w = $("tW");
+  w.textContent = L.wind != null ? KMH(L.wind * 0.36) : "–";
+  if (L.dir != null) w.append(arrow(L.dir));
+  setText("tWSub", (L.gust != null ? `gusts ${KMH(L.gust * 0.36)}` : "") + (L.dir != null ? ` · from ${L.dir}°` : ""));
+  setText("tR", MM(today.reduce((a, x) => a + (x.rain || 0), 0) / 100));
+  setText("tRSub", L.rain_rate ? `now ${nf(L.rain_rate / 10, 1)} mm/h` : "not raining now");
+  setText("tS", L.solar != null ? WM2(L.solar) : "–");
+  setText("tSSub", L.uv != null ? `UV index ${L.uv}` : " ");
+  setText("tI", L.temp_in != null ? C(L.temp_in / 10) : "–");
+  setText("tISub", L.hum_in != null ? `${L.hum_in} % humidity` : " ");
+  // Outdoor sensor battery, as the station reports it (wh65batt: 1 = low): a status dot and a word.
+  const bt = $("tB");
+  bt.textContent = "";
+  if (L.batt_low == null) { bt.textContent = "–"; setText("tBSub", "not reported"); }
+  else {
+    const d = document.createElement("span");
+    d.className = "dot";
+    d.style.background = `var(${L.batt_low ? "--critical" : "--good"})`;
+    bt.append(d, L.batt_low ? "Low" : "OK");
+    setText("tBSub", L.batt_low ? "replace the outdoor sensor's batteries" : "outdoor sensor");
+  }
+}
+
+function renderRange() {
+  const data = buildBuckets(view.samples, view.from, view.to, view.b);
+  view.data = data;
+  const per = bucketName(data.b);
+  for (const id of CHARTS) {
+    const sp = SPECS[id];
+    setText("h" + id[1], sp.bars ? `${sp.name}, per ${per}` : `${sp.name}, average per ${per}`);
+    drawSeries($(id), data, sp);
+  }
+}
+
+function pickBucket(span) { return BUCKETS.find(b => span / b <= 120) || 7 * D; }
+
+async function load() {
+  clearTimeout(refreshTimer);
+  const root = $("root");
+  root.classList.add("loading");
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    status = await rpc("status");
+    let latest = null;
+    try { latest = (await rpc("latest")).sample; } catch (e) { /* no data yet */ }
+    const mid = new Date(); mid.setHours(0, 0, 0, 0);
+    const today = latest ? await fetchSamples(Math.floor(mid / 1000), now, "auto") : [];
+    const recent = latest ? await fetchSamples(now - 4 * H, now, "fine") : [];
+    renderNow(latest, today, recent);
+    let from, to, b;
+    if (state.preset) {
+      const p = PRESETS.find(p => p[0] === state.preset);
+      to = now; from = now - p[1]; b = p[2];
+    } else {
+      from = state.from; to = Math.min(state.to || now, now); b = pickBucket(to - from);
+    }
+    const c = status.coarse;
+    const tier = b >= H && c && c.oldest && c.oldest <= from ? "coarse" : "auto";
+    view = {from, to, b, samples: await fetchSamples(from - (tier === "coarse" ? H : 300), to, tier)};
+    renderRange();
+    if (hoverIdx >= 0) setHover(-1);
+  } catch (e) {
+    const s = $("status");
+    s.textContent = "";
+    const dot = document.createElement("span"), b = document.createElement("b");
+    dot.className = "dot"; dot.style.background = "var(--critical)";
+    b.textContent = "Cannot load data";
+    s.append(dot, b, document.createTextNode(" · " + e.message));
+  } finally {
+    root.classList.remove("loading");
+    if (state.preset) refreshTimer = setTimeout(load, 60000);
+  }
+}
+
+// ---- controls ----
+const toLocalInput = t => new Date(t * 1000 - new Date(t * 1000).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+for (const [label] of PRESETS) {
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.textContent = label;
+  btn.addEventListener("click", () => { state = {preset: label}; syncControls(); load(); });
+  $("presets").appendChild(btn);
+}
+function syncControls() {
+  for (const b of $("presets").children) b.setAttribute("aria-pressed", b.textContent === state.preset);
+  if (state.preset) {
+    const p = PRESETS.find(p => p[0] === state.preset);
+    $("from").value = toLocalInput(Math.floor(Date.now() / 1000) - p[1]);
+    $("to").value = "";
+  }
+}
+$("custom").addEventListener("submit", e => {
+  e.preventDefault();
+  const f = Date.parse($("from").value) / 1000, t = $("to").value ? Date.parse($("to").value) / 1000 : 0;
+  if (!f || (t && t <= f)) return;
+  state = {preset: null, from: Math.floor(f), to: t ? Math.floor(t) : 0};
+  syncControls();
+  load();
+});
+$("csvBtn").addEventListener("click", () => {
+  if (!view) return;
+  const o = (v, d) => v == null ? "" : (v / d).toFixed(Math.log10(d));
+  const rows = ["time,iso_time,uploads,temp_c,temp_min_c,temp_max_c,humidity_pct,pressure_hpa,pressure_abs_hpa," +
+                "wind_kmh,gust_kmh,wind_dir_deg,rain_mm,rain_rate_mm_h,solar_w_m2,solar_max_w_m2,uv,temp_in_c,humidity_in_pct"];
+  const k = (v) => v == null ? "" : (v * 0.36).toFixed(1);
+  for (const s of view.samples)
+    if (s.time >= view.from && s.time <= view.to)
+      rows.push([s.time, new Date(s.time * 1000).toISOString(), s.n, o(s.temp, 10), o(s.temp_min, 10), o(s.temp_max, 10),
+                 s.hum ?? "", o(s.press, 10), o(s.press_abs, 10), k(s.wind), k(s.gust), s.dir ?? "", o(s.rain, 100),
+                 o(s.rain_rate, 10), s.solar ?? "", s.solar_max ?? "", s.uv ?? "", o(s.temp_in, 10), s.hum_in ?? ""].join(","));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
+  a.download = `weather-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+let resizeT = 0;
+addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => view && renderRange(), 150); });
+syncControls();
+load();
+</script>
+</body>
+</html>

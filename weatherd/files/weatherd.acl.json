@@ -1,0 +1,10 @@
+{
+	"unauthenticated": {
+		"description": "Anonymous read access to the weather station history",
+		"read": {
+			"ubus": {
+				"weather": [ "latest", "query", "status" ]
+			}
+		}
+	}
+}

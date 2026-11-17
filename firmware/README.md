@@ -23,6 +23,7 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
 - **Packages:** `rpcd-mod-file`, `rpcd-mod-iwinfo`, `rpcd-mod-rpcsys` and `cgi-io`, for the [admin page](../admin/README.md).
 - **Our programs**, with their configs, ACLs and pages:
   - [huawei-trafficd](../huawei-trafficd/README.md), [lanwatch](../lanwatch/README.md) and [tinymdns](../tinymdns/README.md), enabled at boot through `/etc/rc.d` links in the image;
+  - [weatherd](../weatherd/README.md) and its page, from the next build on (added 2026-11-17; the router currently runs it from the writable area);
   - the [landing page](../www/README.md), `routerinfo`, the icons;
   - the admin page and `admin-apply`.
 - **`/etc/uci-defaults/99-openwrt-wr841n`:** runs once at first boot. There's no IPv6 any more, so it:
@@ -30,7 +31,7 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
   - removes uhttpd's `[::]` listeners.
 
   It works whether the settings were kept from the old firmware or are fresh defaults.
-- **`/lib/upgrade/keep.d/openwrt-wr841n`:** future firmware upgrades with "keep settings" also keep `/srv/huawei-trafficd/` and `/srv/lanwatch/` (traffic history, device list).
+- **`/lib/upgrade/keep.d/openwrt-wr841n`:** future firmware upgrades with "keep settings" also keep `/srv/huawei-trafficd/`, `/srv/lanwatch/` and `/srv/weatherd/` (traffic history, device list, weather history).
 
 Because our programs live in the read-only part, a factory reset no longer removes them. The admin page's texts were updated to say so. The landing page's LuCI link now only appears where LuCI exists.
 
