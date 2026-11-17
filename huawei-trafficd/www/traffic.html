@@ -73,6 +73,7 @@ th{color:var(--text-secondary);font-weight:600}
 .chart .zone{fill:var(--muted);font-size:10px}
 .chart .range{fill:var(--series-3);fill-opacity:.08}
 .chart .s3{fill:var(--series-3)}
+.chart .lossbar{fill:var(--muted)}
 #cellsLbl{display:inline-flex;align-items:center;gap:6px;margin:0 0 8px;cursor:pointer}#cellsLbl[hidden]{display:none}
 .log{max-height:340px;overflow:auto;border-radius:8px}
 .log table{border:0;border-radius:0}
@@ -615,7 +616,7 @@ function drawLoss(box, data, k = K_NET) {
     any = true;
     if (loss <= 0) return;
     const h = Math.max(1, loss * PH), x0 = ML + i * slot + (slot - bw) / 2, y0 = MT + PH, yt = y0 - h, r = Math.min(4, bw / 2, h);
-    el("path", {class: "s3", d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
+    el("path", {class: "lossbar", d: `M${x0},${y0}V${yt + r}Q${x0},${yt} ${x0 + r},${yt}H${x0 + bw - r}Q${x0 + bw},${yt} ${x0 + bw},${yt + r}V${y0}Z`}, svg);
   });
   if (!any) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg, "No latency measurements in this range");
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
@@ -663,15 +664,15 @@ function setHover(i, cx, cy) {
     if (x.ps) {
       const rows = [[x.lat != null ? `${Math.round(x.lat)} ms` : "–",
                      x.lat != null ? `latency avg · ${x.rmin}–${x.rmax} ms` : "latency · no replies"],
-                    [`${Math.round(x.loss * 100)} %`, `packet loss · ${x.pl} of ${x.ps} probes`]];
+                    [`${Math.round(x.loss * 100)} %`, `packet loss · ${x.pl} of ${x.ps} probes`, "--muted"]];
       if (x.gs) rows.push([x.glat != null ? `${Math.round(x.glat)} ms` : "–",
                            x.glat != null ? `powerline avg · max ${x.gmax} ms` : "powerline · no replies"],
-                          [`${Math.round(x.gloss * 100)} %`, `powerline loss · ${x.gl} of ${x.gs} probes`]);
-      for (const [val, label] of rows) {
+                          [`${Math.round(x.gloss * 100)} %`, `powerline loss · ${x.gl} of ${x.gs} probes`, "--muted"]);
+      for (const [val, label, col] of rows) {
         const r = document.createElement("div"), key = document.createElement("i"),
               v = document.createElement("b"), s = document.createElement("span");
         r.className = "r";
-        key.style.background = "var(--series-3)";
+        key.style.background = `var(${col || "--series-3"})`;
         v.textContent = val;
         s.textContent = label;
         r.append(key, v, s);
