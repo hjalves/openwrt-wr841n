@@ -13,6 +13,7 @@ add_target() {
 start_service() {
 	local host port interval history coarse_interval coarse_history
 	local state_file coarse_state_file save_every signal flash_dir flash_every latency gateway_ping
+	local plc_coordinator plc_station plc_iface
 
 	config_load huawei-trafficd
 	config_get host main host 192.168.0.1
@@ -29,6 +30,9 @@ start_service() {
 	config_get_bool gateway_ping main gateway_ping 1
 	config_get flash_dir main flash_dir
 	config_get flash_every main flash_every 86400
+	config_get plc_coordinator main plc_coordinator
+	config_get plc_station main plc_station
+	config_get plc_iface main plc_iface br-lan
 
 	procd_open_instance
 	procd_set_param command "$PROG" -H "$host" -P "$port" -i "$interval" -n "$history" \
@@ -44,6 +48,8 @@ start_service() {
 	fi
 	[ "$gateway_ping" = 0 ] && procd_append_param command -g
 	[ -n "$flash_dir" ] && procd_append_param command -D "$flash_dir" -E "$flash_every"
+	[ -n "$plc_coordinator" ] && procd_append_param command -A "$plc_coordinator"
+	[ -n "$plc_station" ] && procd_append_param command -B "$plc_station" -I "$plc_iface"
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
 }

@@ -7,11 +7,12 @@ Huawei 192.168.0.1 ──HTTP (anonymous)──▶ huawei-trafficd ──ubus─
                                           (RAM ring buffers)     └──▶ ubus call (on router)
 ```
 
-- **Size:** a 34 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
-- **Memory:** about 810 KiB RSS measured on the router with a small history (much of it shared library pages). Each sample takes 72 bytes, so the full default history adds about 920 KiB: 304 KiB for the 3-day tier plus 616 KiB for the 1-year tier. That RAM is only used as the history fills.
+- **Size:** a 40 KiB stripped binary. It links only to libraries already on the router (`libubus`, `libubox`, uClibc and `libgcc_s`), and needs no extra packages.
+- **Memory:** about 810 KiB RSS measured on the router with a small history (much of it shared library pages). Each sample takes 80 bytes, so the full default history adds about 1 MiB: 338 KiB for the 3-day tier plus 684 KiB for the 1-year tier. That RAM is only used as the history fills.
 - **No credentials:** the Huawei API returns these counters to an anonymous session. The daemon fetches a session cookie from `/api/webserver/SesTokInfo`, then reads `/api/monitoring/traffic-statistics`, `/api/device/signal` and `/api/monitoring/status` (the last two can be turned off with `signal 0`). It reuses the cookie and gets a new one only when the Huawei rejects it. If only the signal or status request fails, the traffic sample is still kept.
 - **Latency:** one ICMP echo every 10 s, alternating between `1.1.1.1` and `8.8.8.8` (configurable), on a raw socket in the same event loop. A probe with no reply within 3 s counts as lost. That's about 25–30 MB of LTE data a month; it can be turned off with `latency 0`.
 - **Powerline (local link) latency:** alongside each internet probe, one ICMP echo to the Huawei's own LAN address (`host`). On this network the router reaches the Huawei over a **powerline**, so these pings measure that link alone, and losses there can be told apart from problems on the LTE side. They stay on the LAN (no LTE data). Turn off with `gateway_ping 0` (`-g`). It needs `host` to be a numeric IPv4 address.
+- **Powerline PHY rate:** once per sample, one HomePlug AV `CM_NW_STATS` request to the powerline network's **coordinator** (here the adapter at the Huawei), on a raw Ethernet socket (ethertype `0x88E1`) on `br-lan`. The coordinator reports the average PHY rate it currently sends to, and receives from, each other adapter; the daemon keeps the entry for **our own adapter** (the one at this router). Read-only, LAN only, one 60-byte frame a minute. Off unless `plc_coordinator` and `plc_station` are set. Details below.
 - **Non-blocking:** HTTP collection runs in the same `uloop` as ubus, with a 5 s timeout, so queries are answered even when the Huawei is unreachable.
 
 ## Why ubus (through uhttpd) instead of a separate HTTP server
@@ -41,8 +42,10 @@ Each sample:
 | `rtt_min`, `rtt_avg`, `rtt_max` | Round-trip time in ms over the replies; omitted if there were none |
 | `gw_sent`, `gw_lost` | Pings to the Huawei itself (the powerline hop) that finished since the previous sample, and how many got no reply. All lost means the Huawei was unreachable over the powerline |
 | `gw_rtt_avg`, `gw_rtt_max` | Their average and slowest round-trip time in ms; omitted if there were no replies |
+| `plc_down`, `plc_up` | Powerline PHY rate in Mbit/s: from the coordinator to our adapter (towards this router, the download direction) and back (towards the Huawei). Average of `plc_samples` readings |
+| `plc_samples` | Readings behind them: 1 for a fine sample, the hour's count for a coarse one |
 
-The signal and connection fields are omitted when they weren't read (with `signal 0`, if that request failed, or in history from before this feature). The same goes for the latency fields: with `latency 0`, in a sample taken before any probe finished, or in older history. The `gw_*` fields exist from 2026-11-16 on.
+The signal and connection fields are omitted when they weren't read (with `signal 0`, if that request failed, or in history from before this feature). The same goes for the latency fields: with `latency 0`, in a sample taken before any probe finished, or in older history. The `gw_*` fields exist from 2026-11-16 on, the `plc_*` fields from 2026-11-19 on (and only with `plc_coordinator`/`plc_station` set, and while the coordinator answers).
 
 Latency belongs to the samples, so while the Huawei can't be read (no sample is recorded), probe results build up and are attached to the next sample that is.
 
@@ -55,7 +58,7 @@ Latency belongs to the samples, so while the Huawei can't be read (no sample is 
 
 Each tier is a ring buffer, so the oldest samples are dropped first. Coarse samples are ordinary samples (taken at e.g. 15:00:37, not exactly on the hour). All counters are cumulative, so usage between any two samples is exact; the coarse tier only loses detail *within* each hour.
 
-A single reading would say little about a whole hour, so when an hour closes, its coarse sample's signal values are replaced by the **average of that hour's readings** (`signal_samples` says how many). Its `conn_status` and `net_type` keep any non-connected status or different network type seen during the hour, so a brief disconnect or drop to 3G stays visible in the yearly history. Its latency fields hold the hour's totals (probes sent and lost), the bitwise OR of `ping_ok`, the reply-weighted average latency, and the hour's fastest and slowest reply.
+A single reading would say little about a whole hour, so when an hour closes, its coarse sample's signal values are replaced by the **average of that hour's readings** (`signal_samples` says how many). Its `conn_status` and `net_type` keep any non-connected status or different network type seen during the hour, so a brief disconnect or drop to 3G stays visible in the yearly history. Its `plc_*` fields hold the average of the hour's powerline readings. Its latency fields hold the hour's totals (probes sent and lost), the bitwise OR of `ping_ok`, the reply-weighted average latency, and the hour's fastest and slowest reply.
 
 The Huawei's own clock is not set (it reports 1970), so all timestamps come from OpenWrt. If the OpenWrt clock looks unset (before 2020), sampling is skipped and `status` reports why.
 
@@ -67,7 +70,7 @@ The Huawei's own clock is not set (it reports 1970), so all timestamps come from
 |---|---|---|
 | `latest` | none | `{"sample": {...}}`; ubus status 9 (no data) until the first sample |
 | `query` | `from`, `to`, `limit` (optional integers), `tier` (optional string) | `{"samples": [...], "count": n, "truncated": bool}` |
-| `status` | none | per tier: interval, capacity, sample count, oldest/newest time, state file; plus last error, consecutive failures, whether `signal` collection is on, the last `signal_error`, and `latency` (enabled, interval, targets) |
+| `status` | none | per tier: interval, capacity, sample count, oldest/newest time, state file; plus last error, consecutive failures, whether `signal` collection is on, the last `signal_error`, `latency` (enabled, interval, targets), and `powerline` (enabled, interface, coordinator, station, time and values of the last reading, error) if configured |
 
 `from` and `to` are Unix timestamps (inclusive). A **negative** value is relative to now, so `{"from": -3600}` means the last hour. Samples are returned oldest first. `limit` defaults to 1000 and is capped at 4000 to keep replies under ubus's 1 MiB message limit. If `truncated` is true, ask again with `from` set to the last returned `time + 1`.
 
@@ -130,6 +133,7 @@ The table and CSV include the signal and connection fields. `--events` prints th
 - **Signal charts:** average SINR and RSRP per period as two line charts, each with its own axis marked with quality zones (SINR: below 0 dB poor, 0–13 fair, 13–20 good, 20+ excellent; RSRP: below −100 dBm poor, −100 to −90 fair, −90 to −80 good, −80+ excellent). Periods without readings break the line. All four charts share the same x positions.
 - **Latency charts:** average latency per period as a line, with the period's fastest-to-slowest range as a light band, plus packet loss as bars on a fixed 0–100 % axis. So that one extreme spike can't flatten the line, the latency axis is capped at 3× the highest average; the tooltip shows the true extremes. The latency lines use the same aqua as the signal charts, as one "link quality" colour: a fourth hue can't be told apart reliably from the other three (checked with the palette validator). Loss bars are neutral grey instead, so that bad news isn't drawn in a colour that reads as "good".
 - **Powerline charts:** the same two charts for the pings to the Huawei itself ("Powerline to the Huawei: latency" and "…: packet loss"), with the band reaching each period's slowest reply. They're separate charts rather than second lines, so every chart stays single-colour. Loss in the powerline chart but not the internet one is the powerline; loss in both also points to the powerline, since the internet pings cross it too. The tooltip, table and CSV include these figures, and the "Internet now" tile says when the Huawei isn't answering either.
+- **Powerline speed chart:** the average PHY rate per period as two lines on one Mbit/s axis: towards the router (download direction, in the download blue) and towards the Huawei (upload direction, in the upload orange), with a legend and the latest values labelled at the right edge. The card is hidden when the powerline rate isn't configured and the range has no readings. The tooltip, table and CSV include both rates.
 - **Connection log:** worked out from consecutive samples:
   - **Internet unreachable:** runs of samples where no latency target answered while the Huawei itself still answered pings, with their duration.
   - **Huawei unreachable:** runs where no ping to the Huawei got a reply: the powerline was down. These aren't also counted as internet outages.
@@ -154,6 +158,9 @@ Long ranges read the hourly tier when it reaches back far enough, in pages of 10
 | `host`, `port` | `192.168.0.1`, `80` | Huawei address (numeric IPv4) |
 | `signal` | `1` | Also read signal quality and connection status (two more anonymous requests per sample). `0` collects traffic counters only. |
 | `latency` | `1` | Measure internet latency and packet loss (one ping every 10 s). `0` turns it off |
+| `plc_coordinator` | – | MAC of the powerline network's coordinator to ask (`-A`). Here `5c:e9:31:ba:49:6a`, the adapter at the Huawei |
+| `plc_station` | – | MAC of our own powerline adapter, the station whose rates are kept (`-B`). Here `5c:e9:31:ba:41:5f`, the adapter at this router |
+| `plc_iface` | `br-lan` | Interface to send the request on (`-I`). The LAN bridge reaches the adapter on whichever port it's plugged into |
 | `target` | `1.1.1.1`, `8.8.8.8` | Latency targets (UCI list, up to 4, IPv4 addresses), pinged in turn |
 | `gateway_ping` | `1` | Also ping the Huawei (`host`) every 10 s, measuring the local (powerline) link on its own. `0` turns it off |
 | `interval` | `60` | Seconds between samples (5–86400) |
@@ -192,9 +199,10 @@ The `/tmp` files are RAM, so a reboot or power cut loses them. To keep the **hou
   - if flag 2 (cell, status or network type changed): varints for the cell ID and the status, then a byte for the network type;
   - if flag 4 (latency): varints for probes sent, probes lost, RTT min, RTT avg and RTT max (ms), then a byte for the `ping_ok` mask.
 
-  - if flag 8 (powerline latency, block version 2): varints for probes sent, probes lost, RTT avg and RTT max (ms).
+  - if flag 8 (powerline latency, block version 2): varints for probes sent, probes lost, RTT avg and RTT max (ms);
+  - if flag 16 (powerline PHY rate, block version 3): varints for the rate down and up (Mbit/s) and the reading count.
 
-  Records written before latency existed simply lack flag 4. Blocks written before 2026-11-16 are version 1 and never have flag 8; both versions are read.
+  Records written before latency existed simply lack flag 4. Blocks written before 2026-11-16 are version 1 and never have flag 8; blocks from before 2026-11-19 are version 2 and never have flag 16. All three versions are read.
 
 **Turning it off:** set `option flash_dir ''`, run `/etc/init.d/huawei-trafficd restart`, then `rm -r /srv/huawei-trafficd` to free the space.
 
@@ -280,6 +288,11 @@ rm -r /srv/huawei-trafficd   # hourly history on flash
   - **Flash only:** with the RAM state deleted, a restart recovered 6 hourly samples from the mixed v1/v2 file, the newer ones with `gw_*`.
   - **Page:** checked against an extended mock with a lossy powerline hour and a 15-minute powerline outage. The outage shows in both loss charts and is logged once, as "Huawei unreachable"; an internet-only outage is still logged as "Internet unreachable". Light and dark mode, phone layout, tooltip, table and CSV checked, with no script errors.
   - **On the router:** the existing history carried over, and live readings were 4–7 ms average (10 ms worst) to the Huawei with no loss, against about 40 ms to the internet. RSS 768 KiB. It runs from the writable area (40 KB) until the next firmware build bakes it in.
+- **Powerline PHY rate update (2026-11-19):** tested on the router with a test build registered as `huawei.traffic.test`, next to the real service, on copies of the real history files.
+  - **Readings:** every 10 s through `br-lan`; fine samples carried one reading each (550–630 Mbit/s both ways), and one-minute test "hours" averaged 6 readings each.
+  - **Upgrade:** the copied state files (v4) loaded, and were rewritten as v6 on stop. Installing the real service later upgraded its v5 files: all 3,676 fine and 80 hourly samples loaded.
+  - **Flash:** a stop appended a v3 block to a copy of this month's file (v1/v2 blocks). With the RAM state deleted, a restart rebuilt 69 hourly samples from the mixed file, with no damage warnings: the new ones with `plc_*`, the older ones still with their `gw_*` and signal fields.
+  - **Page:** the new chart, legend, end labels, keyboard tooltip, table columns and CSV checked in headless Chromium against real data, desktop light and phone dark, with no script errors. The two line colours (the existing download and upload colours) pass the palette validator in both modes.
 - **Signal and connection update:**
   - **Soak test:** the Huawei rebooted 3 times on 2026-11-15, shortly after a one-off probe of several of its API endpoints. The cause wasn't established, so before deploying, `device/signal` and `monitoring/status` were polled from the LAN once a minute for 20 minutes. The Huawei's session uptime rose steadily throughout, with no reboots or reconnects.
   - **Native test:** a native build ran against a mock Huawei that could fail each endpoint on demand (error, garbage or timeout). In every case the traffic sample was kept and `signal_error` was reported.
@@ -294,6 +307,23 @@ rm -r /srv/huawei-trafficd   # hourly history on flash
   - **Size:** about 20 bytes per record in a 14-record block.
   - **On the router:** the first file written on the router was decoded independently in Python and matched the daemon's hourly samples exactly. The test also found a bug: a network type seen briefly within an hour (for example 3G) wasn't kept in the hourly sample. It's fixed.
 - Installed on the router as above (overlay use went from 284 to 292 KiB). The service is enabled at boot and running. `ubus call` and anonymous HTTP `latest`/`query` work, while anonymous `system.info` is still `Access denied`. History survived `/etc/init.d/huawei-trafficd restart`.
+
+## Powerline PHY rate: how it's read
+
+The router reaches the Huawei over three HomePlug AV powerline adapters (probed on 2026-11-19):
+
+| Adapter | Where | Chip |
+|---|---|---|
+| `5c:e9:31:ba:41:5f` | at this router | Broadcom |
+| `5c:e9:31:ba:49:6a` | at the Huawei; the network's **coordinator** | Broadcom |
+| `98:48:27:87:3f:68` | elsewhere | Qualcomm QCA7420 |
+
+- **Request:** `CM_NW_STATS.REQ` (MMTYPE `0x6048`) with **MMV 2** (HomePlug AV 2.0), no payload, sent to the coordinator's MAC.
+- **Reply:** `CM_NW_STATS.CNF` (`0x6049`): a station count, then per station its MAC, its average TX rate and its average RX rate, as 16-bit little-endian Mbit/s. TX is the coordinator sending to that station (towards this router); RX is the reverse.
+- **Why MMV 2:** with MMV 1 the rates are single bytes and saturate at 255 (`ff ff`), far below this link's 550–630 Mbit/s.
+- **Who answers:** only the coordinator. The adapter at the router answers this request (and `CM_HFID`, `CM_LINK_STATS`) with `CM_MME_ERROR`, "unsupported". If the coordinator role ever moves to another adapter, the old one answers with that error too: `status` then says the coordinator refused the request, and `plc_coordinator` needs the new one's MAC.
+- **Errors in `status`:** "no answer from the coordinator" after 3 unanswered requests in a row, "isn't in the coordinator's list" if our station is missing, and "no current rate" when both rates are 0 (no recent traffic between the two adapters); such readings aren't recorded.
+- **What the numbers mean:** PHY rates are the signalling rates the adapters negotiate, not throughput, which is typically about half. The router's own ports are 100 Mbit/s, and the LTE link is slower still, so the powerline is rarely the bottleneck. The value is in the trend: a drop shows interference or a worse path on the mains wiring, and can be lined up with the powerline latency and loss charts.
 
 ## Security notes
 

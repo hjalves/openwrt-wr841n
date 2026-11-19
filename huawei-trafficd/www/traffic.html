@@ -74,6 +74,10 @@ th{color:var(--text-secondary);font-weight:600}
 .chart .range{fill:var(--series-3);fill-opacity:.08}
 .chart .s3{fill:var(--series-3)}
 .chart .lossbar{fill:var(--muted)}
+.chart .line.ln1{stroke:var(--series-1)}.chart .line.ln2{stroke:var(--series-2)}
+.chart .pt.ln1{fill:var(--series-1)}.chart .pt.ln2{fill:var(--series-2)}
+.chart .endlbl{fill:var(--text-secondary);font-size:11px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--text-secondary);font-size:12px;margin:0 0 6px}
 #cellsLbl{display:inline-flex;align-items:center;gap:6px;margin:0 0 8px;cursor:pointer}#cellsLbl[hidden]{display:none}
 .log{max-height:340px;overflow:auto;border-radius:8px}
 .log table{border:0;border-radius:0}
@@ -156,6 +160,12 @@ th{color:var(--text-secondary);font-weight:600}
   <p class="note" id="nQ">&nbsp;</p>
   <div class="chart" id="cQ" tabindex="0" aria-describedby="kbd"></div>
 </section>
+<section class="card" id="cardY">
+  <h2 id="hY">Powerline speed (PHY rate)</h2>
+  <p class="note" id="nY">&nbsp;</p>
+  <p class="legend"><span><span class="key k1"></span>Towards the router (download direction)</span><span><span class="key k2"></span>Towards the Huawei (upload direction)</span></p>
+  <div class="chart" id="cY" tabindex="0" aria-describedby="kbd"></div>
+</section>
 <section class="card">
   <h2>Connection log</h2>
   <p class="note" id="logSum">&nbsp;</p>
@@ -169,7 +179,7 @@ th{color:var(--text-secondary);font-weight:600}
   <span class="hint" id="kbd">Hover a chart, or focus one and use ← → for details.</span>
 </div>
 <table id="tbl" hidden>
-  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th><th>Avg latency</th><th>Packet loss</th><th>Powerline latency</th><th>Powerline loss</th></tr></thead>
+  <thead><tr><th>Period starting</th><th>Download</th><th>Upload</th><th>Avg download rate</th><th>Avg upload rate</th><th>Avg SINR</th><th>Avg RSRP</th><th>Avg latency</th><th>Packet loss</th><th>Powerline latency</th><th>Powerline loss</th><th>PHY rate ↓</th><th>PHY rate ↑</th></tr></thead>
   <tbody></tbody>
 </table>
 </div>
@@ -185,7 +195,7 @@ const H = 3600, D = 86400;
 const PRESETS = [["1h", H, 60], ["6h", 6*H, 300], ["24h", D, 900], ["3d", 3*D, H],
                  ["7d", 7*D, 3*H], ["30d", 30*D, D], ["1y", 365*D, 7*D]];
 const BUCKETS = [60, 300, 900, 1800, H, 3*H, 6*H, 12*H, D, 7*D];
-const CHARTS = ["cD", "cU", "cS", "cR", "cL", "cP", "cG", "cQ"];
+const CHARTS = ["cD", "cU", "cS", "cR", "cL", "cP", "cG", "cQ", "cY"];
 const CHART_MR = 58;  // right margin, shared so all charts line up; holds zone names
 const PAGE = 1000;  // samples per request; keeps each router reply ~150 KB
 
@@ -349,6 +359,18 @@ function buildBuckets(samples, from, to, b, spacing) {
     }
   }
   for (const x of bk) { x.glat = x.gr ? x.gw / x.gr : null; x.gloss = x.gs ? x.gl / x.gs : null; }
+  // Powerline PHY rate: reading-weighted average (hourly samples carry their hour's average).
+  j = 0;
+  for (const x of bk) { x.yn = 0; x.yd = 0; x.yu = 0; }
+  for (const sm of samples) {
+    if (!sm.plc_samples || sm.time < from || sm.time >= to) continue;
+    while (j < bk.length && bk[j].e <= sm.time) j++;
+    if (j >= bk.length) break;
+    if (sm.time < bk[j].t) continue;
+    const x = bk[j], w = sm.plc_samples;
+    x.yn += w; x.yd += sm.plc_down * w; x.yu += sm.plc_up * w;
+  }
+  for (const x of bk) { x.ydn = x.yn ? x.yd / x.yn : null; x.yup = x.yn ? x.yu / x.yn : null; }
   return {bk, b, totD, totU};
 }
 
@@ -622,6 +644,47 @@ function drawLoss(box, data, k = K_NET) {
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
+// Powerline PHY rate per period: two lines (towards the router, towards the Huawei) on one Mbit/s axis.
+function drawRate(box, data) {
+  box.textContent = "";
+  const W = Math.max(280, box.clientWidth), PH = 130, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
+  const pw = W - ML - MR, n = data.bk.length, slot = pw / n;
+  const vals = data.bk.flatMap(x => x.yn ? [x.ydn, x.yup] : []);
+  const ticks = niceTicks(Math.max(100, ...vals)), top = ticks[ticks.length - 1];
+  const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
+                         "aria-label": `Powerline PHY rate towards the router and towards the Huawei, average per ${bucketName(data.b)}`}, box);
+  const y = v => MT + PH - v / top * PH;
+  for (const t of ticks) {
+    el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
+    el("text", {x: ML - 8, y: y(t) + 4, "text-anchor": "end"}, svg, `${t} Mb/s`);
+  }
+  const band = el("rect", {class: "band", y: MT, height: PH, width: slot, x: -999, rx: 3}, svg);
+  const ends = [];
+  for (const [k, cls, arrow] of [["ydn", "ln1", "↓"], ["yup", "ln2", "↑"]]) {
+    let d = "", run = [], last = null;
+    const flush = () => { if (run.length === 1) el("circle", {class: "pt " + cls, cx: run[0][0], cy: run[0][1], r: 4}, svg); run = []; };
+    data.bk.forEach((x, i) => {
+      if (x[k] == null) { flush(); return; }
+      const p = [ML + i * slot + slot / 2, y(x[k])];
+      d += (run.length ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1);
+      run.push(p);
+      last = [p[1], x[k]];
+    });
+    flush();
+    if (d) el("path", {class: "line " + cls, d}, svg);
+    if (last) ends.push({y: last[0], text: `${arrow} ${Math.round(last[1])}`});
+  }
+  // Latest values as direct labels in the right margin, nudged apart if they'd touch.
+  if (ends.length === 2 && Math.abs(ends[0].y - ends[1].y) < 12) {
+    const mid = (ends[0].y + ends[1].y) / 2, up = ends[0].y <= ends[1].y ? 0 : 1;
+    ends[up].y = mid - 6; ends[1 - up].y = mid + 6;
+  }
+  for (const e of ends) el("text", {class: "endlbl", x: W - MR + 6, y: e.y + 4}, svg, e.text);
+  if (!vals.length) el("text", {class: "empty", x: ML + pw / 2, y: MT + PH / 2, "text-anchor": "middle"}, svg,
+                       "No powerline readings in this range");
+  finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
+}
+
 function setHover(i, cx, cy) {
   hoverIdx = i;
   const tip = $("tip");
@@ -636,7 +699,7 @@ function setHover(i, cx, cy) {
   t.className = "t";
   t.textContent = periodLabel(x.t, x.e);
   tip.appendChild(t);
-  if (!x.cov && !x.sw && !x.ps && !x.gs) {
+  if (!x.cov && !x.sw && !x.ps && !x.gs && !x.yn) {
     const r = document.createElement("div");
     r.textContent = "No data";
     tip.appendChild(r);
@@ -678,6 +741,16 @@ function setHover(i, cx, cy) {
         r.append(key, v, s);
         tip.appendChild(r);
       }
+    }
+    if (x.yn) for (const [k, name, color] of [["ydn", "PHY rate towards the router", "--series-1"], ["yup", "towards the Huawei", "--series-2"]]) {
+      const r = document.createElement("div"), key = document.createElement("i"),
+            v = document.createElement("b"), s = document.createElement("span");
+      r.className = "r";
+      key.style.background = `var(${color})`;
+      v.textContent = `${Math.round(x[k])} Mbit/s`;
+      s.textContent = name;
+      r.append(key, v, s);
+      tip.appendChild(r);
     }
     if (x.est) {
       const r = document.createElement("div");
@@ -838,6 +911,10 @@ function renderRange() {
   setText("nQ", "Share of those pings that got no reply. Loss here but not in the internet chart above is the powerline; loss in both points to the powerline too, since the internet pings cross it as well.");
   drawLatency($("cG"), data, K_PL);
   drawLoss($("cQ"), data, K_PL);
+  setText("hY", `Powerline speed (PHY rate), average per ${per}`);
+  setText("nY", "The rate the two powerline adapters currently signal at, as the one at the Huawei reports it. Real throughput is roughly half; a drop points to interference on the mains wiring.");
+  $("cardY").hidden = !(status && status.powerline) && !data.bk.some(x => x.yn);
+  if (!$("cardY").hidden) drawRate($("cY"), data);
   renderLog();
   const tb = $("tbl").tBodies[0];
   tb.textContent = "";
@@ -847,7 +924,8 @@ function renderRange() {
       ? [bytes(x.d), bytes(x.u), rate(x.d / x.cov), rate(x.u / x.cov)] : ["–", "–", "–", "–"],
       x.sw ? [sig("sinr", Math.round(x.sinr)), sig("rsrp", Math.round(x.rsrp))] : ["–", "–"],
       x.ps ? [x.lat != null ? `${Math.round(x.lat)} ms` : "–", `${Math.round(x.loss * 100)} %`] : ["–", "–"],
-      x.gs ? [x.glat != null ? `${Math.round(x.glat)} ms` : "–", `${Math.round(x.gloss * 100)} %`] : ["–", "–"]);
+      x.gs ? [x.glat != null ? `${Math.round(x.glat)} ms` : "–", `${Math.round(x.gloss * 100)} %`] : ["–", "–"],
+      x.yn ? [`${Math.round(x.ydn)} Mbit/s`, `${Math.round(x.yup)} Mbit/s`] : ["–", "–"]);
     for (const c of cells) tr.insertCell().textContent = c;
   }
 }
@@ -968,7 +1046,7 @@ $("csvBtn").addEventListener("click", () => {
   const rows = ["time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b," +
                 "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type," +
                 "ping_sent,ping_lost,ping_ok_mask,rtt_min_ms,rtt_avg_ms,rtt_max_ms," +
-                "gw_sent,gw_lost,gw_rtt_avg_ms,gw_rtt_max_ms"];
+                "gw_sent,gw_lost,gw_rtt_avg_ms,gw_rtt_max_ms,plc_down_mbps,plc_up_mbps,plc_samples"];
   const o = v => v == null ? "" : v;
   for (const s of view.samples)
     if (s.time >= view.from && s.time <= view.to)
@@ -976,7 +1054,8 @@ $("csvBtn").addEventListener("click", () => {
                  s.total_download, s.total_upload, o(s.rsrp), o(s.rsrq), o(s.sinr), o(s.rssi),
                  o(s.signal_samples), o(s.cell_id), o(s.conn_status), o(s.net_type),
                  o(s.ping_sent), o(s.ping_lost), o(s.ping_ok), o(s.rtt_min), o(s.rtt_avg), o(s.rtt_max),
-                 o(s.gw_sent), o(s.gw_lost), o(s.gw_rtt_avg), o(s.gw_rtt_max)].join(","));
+                 o(s.gw_sent), o(s.gw_lost), o(s.gw_rtt_avg), o(s.gw_rtt_max),
+                 o(s.plc_down), o(s.plc_up), o(s.plc_samples)].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv"}));
   a.download = `lte-usage-${new Date(view.from * 1000).toISOString().slice(0, 10)}.csv`;

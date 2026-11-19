@@ -9,6 +9,10 @@
  * Everything is non-blocking inside a single uloop, so ubus calls are never
  * held up by a slow or unreachable Huawei router.
  *
+ * Optionally (-A/-B) also the powerline's PHY rate: once per sample, a HomePlug
+ * AV CM_NW_STATS request to the powerline network's coordinator, on a raw
+ * Ethernet socket.
+ *
  * Only the router's existing shared libraries are used: libubus, libubox and
  * uClibc.
  */
@@ -25,7 +29,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <arpa/inet.h>
+#include <net/if.h>
+#include <netpacket/packet.h>
 #include <dirent.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
@@ -47,7 +54,7 @@
 #define QUERY_DEFAULT_MAX 1000
 #define QUERY_HARD_MAX    4000        /* keeps replies well under ubus' 1 MiB */
 #define STATE_MAGIC       0x48545246u /* "HTRF" */
-#define STATE_VERSION     5u          /* v5: 72-byte samples with Huawei latency; v1-v4 still load */
+#define STATE_VERSION     6u          /* v6: 80-byte samples with powerline rate; v1-v5 still load */
 #define SIG_NONE          (-128)      /* unknown rsrq/sinr/rssi */
 #define RSRP_NONE         INT16_MIN   /* unknown rsrp */
 #define NET_NONE          255         /* unknown network type */
@@ -79,11 +86,19 @@ struct sample {
 	uint16_t gw_sent;       /* probes resolved in this period; 0 = no data */
 	uint16_t gw_lost;       /* ... of which got no reply */
 	uint16_t gw_rtt_avg, gw_rtt_max;  /* ms, over the replies */
+	/* Powerline PHY rate (HomePlug AV), as the coordinator reports it for
+	 * the station on our side: average over plc_n readings. */
+	uint16_t plc_down;      /* Mbit/s, coordinator -> our station (towards us) */
+	uint16_t plc_up;        /* Mbit/s, our station -> coordinator */
+	uint16_t plc_n;         /* readings behind them; 0 = none */
+	uint16_t plc_reserved;
 };
 
 /* State files store samples as raw structs: the size must not change silently.
- * Version 4 files hold the first 64 bytes of this layout (no gw_* fields). */
-typedef char sample_is_72_bytes[sizeof(struct sample) == 72 ? 1 : -1];
+ * Version 5 files hold the first 72 bytes of this layout (no plc_* fields),
+ * version 4 files the first 64 (no gw_* fields either). */
+typedef char sample_is_80_bytes[sizeof(struct sample) == 80 ? 1 : -1];
+#define SAMPLE_V5_SIZE 72
 #define SAMPLE_V4_SIZE 64
 
 /* The 56-byte sample of state file version 3 (signal, no latency). */
@@ -115,6 +130,7 @@ static void sample_clear_signal(struct sample *s)
 	s->ping_sent = s->ping_lost = 0;
 	s->rtt_min = s->rtt_avg = s->rtt_max = 0;
 	s->gw_sent = s->gw_lost = s->gw_rtt_avg = s->gw_rtt_max = 0;
+	s->plc_down = s->plc_up = s->plc_n = s->plc_reserved = 0;
 }
 
 /* ---- configuration ---- */
@@ -130,6 +146,8 @@ static unsigned cfg_ntargets = 2;
 static unsigned cfg_save_every;    /* seconds, 0 = only on exit */
 static const char *cfg_flash_dir;  /* hourly history log on flash; NULL = off */
 static unsigned cfg_flash_every = 86400;
+static const char *cfg_plc_iface = "br-lan";  /* powerline rate: interface to ask on */
+static const char *cfg_plc_cco, *cfg_plc_sta;  /* coordinator and our station's MACs */
 
 /*
  * Two history tiers, each a ring buffer (oldest samples dropped first):
@@ -189,6 +207,7 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 	uint8_t p_ok = 0;
 	uint32_t g_sent = 0, g_lost = 0, g_rtt_w = 0, g_replies = 0;
 	uint16_t g_max = 0;
+	uint32_t l_down = 0, l_up = 0, l_n = 0;
 
 	for (i = fine.count; i-- > 0;) {
 		const struct sample *f = ring_at(&fine, i);
@@ -228,6 +247,11 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 					g_max = f->gw_rtt_max;
 			}
 		}
+		if (f->plc_n) {  /* reading-weighted, like a plain average of all readings */
+			l_down += (uint32_t)f->plc_down * f->plc_n;
+			l_up += (uint32_t)f->plc_up * f->plc_n;
+			l_n += f->plc_n;
+		}
 		if (!f->sig_n || f->rsrp == RSRP_NONE)
 			continue;
 		rsrp += f->rsrp;
@@ -249,6 +273,11 @@ static void coarse_finalize(struct sample *c, uint32_t end)
 		c->gw_lost = g_lost > 65535 ? 65535 : (uint16_t)g_lost;
 		c->gw_rtt_avg = g_replies ? (uint16_t)((g_rtt_w + g_replies / 2) / g_replies) : 0;
 		c->gw_rtt_max = g_max;
+	}
+	if (l_n) {
+		c->plc_down = (uint16_t)((l_down + l_n / 2) / l_n);
+		c->plc_up = (uint16_t)((l_up + l_n / 2) / l_n);
+		c->plc_n = l_n > 65535 ? 65535 : (uint16_t)l_n;
 	}
 	if (!n)
 		return;
@@ -345,13 +374,18 @@ static void ring_load(struct ring *r)
 		syslog(LOG_NOTICE, "%s was recorded at %us intervals, now %us",
 		       r->state, hdr[3], r->interval);
 	for (i = 0; i < hdr[2]; i++) {
-		if (hdr[1] >= 5) {
+		if (hdr[1] >= 6) {
 			if (fread(&s, sizeof(s), 1, f) != 1)
 				break;
+		} else if (hdr[1] == 5) {  /* 72-byte samples: no powerline rate */
+			if (fread(&s, SAMPLE_V5_SIZE, 1, f) != 1)
+				break;
+			s.plc_down = s.plc_up = s.plc_n = s.plc_reserved = 0;
 		} else if (hdr[1] == 4) {  /* 64-byte samples: no Huawei latency */
 			if (fread(&s, SAMPLE_V4_SIZE, 1, f) != 1)
 				break;
 			s.gw_sent = s.gw_lost = s.gw_rtt_avg = s.gw_rtt_max = 0;
+			s.plc_down = s.plc_up = s.plc_n = s.plc_reserved = 0;
 		} else if (hdr[1] == 3) {  /* 56-byte samples: signal, no latency */
 			struct sample_v3 o;
 
@@ -400,7 +434,7 @@ static void ring_load(struct ring *r)
  * Whole old months are deleted, so files are never rewritten.
  *
  * Each append is one block: 12-byte header + delta-encoded records.
- *   "HB", version (1, or 2 when records may carry F_GW), record count,
+ *   "HB", version (1; 2 when records may carry F_GW; 3 F_PLC), record count,
  *   payload length (u16 LE), 0 (u16),
  *   CRC-32 of the payload (u32 LE)
  * The first record of a block is encoded against an all-zero sample, so
@@ -409,17 +443,20 @@ static void ring_load(struct ring *r)
  * time delta), session download/upload deltas, total-minus-session offset
  * deltas; [signal: rsrp+140, rsrq+40, sinr+40, rssi+140, readings];
  * [meta: cell, status, network type]; [ping: sent, lost, rtt min/avg/max,
- * ok mask]; [gw: sent, lost, rtt avg/max]. About 30 bytes per hourly record.
+ * ok mask]; [gw: sent, lost, rtt avg/max]; [plc: down, up, readings].
+ * About 35 bytes per hourly record.
  */
 #define FLASH_MONTHS     13           /* keep this many monthly files */
 #define FLASH_MIN_FREE   (64 * 1024)  /* never fill the overlay past this */
 #define BLOCK_HDR        12
 #define BLOCK_MAX        255          /* records per block */
-#define REC_MAX          104          /* worst case: 1 + 6x10 + 5 + 9 + 16 + 12 = 103 bytes */
+#define REC_MAX          112          /* worst case: 1 + 6x10 + 5 + 9 + 16 + 12 + 9 = 112 bytes */
 #define F_SIG            1
 #define F_META           2
 #define F_PING           4
 #define F_GW             8            /* block version 2 */
+#define F_PLC            16           /* block version 3 */
+#define BLOCK_VERSION    3            /* written; 1 and 2 are still read */
 #define TMPFS_MAGIC_     0x01021994
 #define RAMFS_MAGIC_     0x858458f6
 
@@ -511,7 +548,7 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 	size_t n = 0;
 
 	p[n++] = (sig ? F_SIG : 0) | (meta ? F_META : 0) | (b->ping_sent ? F_PING : 0) |
-	         (b->gw_sent ? F_GW : 0);
+	         (b->gw_sent ? F_GW : 0) | (b->plc_n ? F_PLC : 0);
 	n += put_sv(p + n, dt);
 	n += put_sv(p + n, (int64_t)b->uptime - a->uptime - dt);
 	n += put_sv(p + n, (int64_t)(b->download - a->download));
@@ -544,6 +581,11 @@ static size_t rec_encode(uint8_t *p, const struct sample *a, const struct sample
 		n += put_uv(p + n, b->gw_rtt_avg);
 		n += put_uv(p + n, b->gw_rtt_max);
 	}
+	if (b->plc_n) {
+		n += put_uv(p + n, b->plc_down);
+		n += put_uv(p + n, b->plc_up);
+		n += put_uv(p + n, b->plc_n);
+	}
 	return n;
 }
 
@@ -573,6 +615,7 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 	b->ping_ok = 0;
 	b->ping_sent = b->ping_lost = b->rtt_min = b->rtt_avg = b->rtt_max = 0;
 	b->gw_sent = b->gw_lost = b->gw_rtt_avg = b->gw_rtt_max = 0;
+	b->plc_down = b->plc_up = b->plc_n = b->plc_reserved = 0;
 	if (f & F_SIG) {
 		if (end - *p < 5)
 			return false;
@@ -617,6 +660,17 @@ static bool rec_decode(const uint8_t **p, const uint8_t *end,
 		b->gw_lost = (uint16_t)v[1];
 		b->gw_rtt_avg = (uint16_t)v[2];
 		b->gw_rtt_max = (uint16_t)v[3];
+	}
+	if (f & F_PLC) {
+		uint64_t v[3];
+		int k;
+
+		for (k = 0; k < 3; k++)
+			if (!get_uv(p, end, &v[k]) || v[k] > 65535)
+				return false;
+		b->plc_down = (uint16_t)v[0];
+		b->plc_up = (uint16_t)v[1];
+		b->plc_n = (uint16_t)v[2];
 	}
 	return true;
 }
@@ -692,7 +746,7 @@ static void flash_read_month(unsigned month, void (*fn)(const struct sample *))
 			break;
 		len = hdr[4] | hdr[5] << 8;
 		count = hdr[3];
-		if (hdr[0] != 'H' || hdr[1] != 'B' || hdr[2] < 1 || hdr[2] > 2 || !count)
+		if (hdr[0] != 'H' || hdr[1] != 'B' || hdr[2] < 1 || hdr[2] > BLOCK_VERSION || !count)
 			break;
 		free(buf);
 		if (!(buf = malloc(len ? len : 1)) || fread(buf, 1, len, f) != len)
@@ -771,7 +825,7 @@ static bool flash_append(unsigned month, const uint8_t *payload, size_t len, uns
 	ssize_t w;
 	int fd;
 
-	hdr[0] = 'H'; hdr[1] = 'B'; hdr[2] = 2; hdr[3] = (uint8_t)count;
+	hdr[0] = 'H'; hdr[1] = 'B'; hdr[2] = BLOCK_VERSION; hdr[3] = (uint8_t)count;
 	hdr[4] = len & 0xff; hdr[5] = len >> 8; hdr[6] = hdr[7] = 0;
 	hdr[8] = crc & 0xff; hdr[9] = crc >> 8 & 0xff; hdr[10] = crc >> 16 & 0xff; hdr[11] = crc >> 24;
 	if (!month_file(path, sizeof(path), month))
@@ -976,6 +1030,7 @@ static void http_close(void)
 
 static void finish_sample(void);
 static void ping_attach(struct sample *s);
+static void plc_attach(struct sample *s);
 
 static void sample_failed(const char *fmt, ...)
 {
@@ -1052,6 +1107,7 @@ static void finish_sample(void)
 	http.busy = false;
 	http.have_pending = false;
 	ping_attach(&http.pending);
+	plc_attach(&http.pending);
 	record_sample(&http.pending);
 	last_success = http.pending.time;
 	if (failures)
@@ -1501,6 +1557,172 @@ static bool ping_open(void)
 	return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* Powerline PHY rate: HomePlug AV CM_NW_STATS from the coordinator    */
+/* ------------------------------------------------------------------ */
+/*
+ * Once per sample, one CM_NW_STATS.REQ (MMV 2, HomePlug AV 2.0) to the
+ * powerline network's coordinator (CCo). Its CNF lists every other station
+ * with the average PHY rate it sends to it (TX) and receives from it (RX),
+ * 16-bit little-endian Mbit/s in the MMV 2 format (the MMV 1 format has one
+ * byte each and saturates at 255). We keep the entry of our own station:
+ * TX is towards us (down), RX from us (up). Read-only.
+ */
+#define ETH_P_HPAV       0x88E1
+#define MMT_NW_STATS     0x6048     /* .REQ; .CNF = +1 */
+#define MMT_MME_ERROR    0x6046     /* CM_MME_ERROR.IND */
+#define PLC_MISSES       3          /* unanswered requests in a row before it's an error */
+
+static struct uloop_fd plc_fd = { .fd = -1 };
+static int plc_ifindex;
+static uint8_t plc_me[6], plc_cco[6], plc_sta[6];
+static struct {                     /* readings since the last sample */
+	uint32_t down, up;
+	uint16_t n;
+} placc;
+static bool plc_waiting;            /* a request is unanswered */
+static unsigned plc_misses;
+static uint32_t plc_last_ok;        /* time of the last reading */
+static uint16_t plc_last_down, plc_last_up;
+static char plc_error[112];
+
+static bool parse_mac(const char *s, uint8_t *m)
+{
+	unsigned v[6], i;
+	char c;
+
+	if (!s || sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x%c", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &c) != 6)
+		return false;
+	for (i = 0; i < 6; i++)
+		m[i] = (uint8_t)v[i];
+	return true;
+}
+
+static void plc_attach(struct sample *s)
+{
+	if (!placc.n)
+		return;
+	s->plc_down = (uint16_t)((placc.down + placc.n / 2) / placc.n);
+	s->plc_up = (uint16_t)((placc.up + placc.n / 2) / placc.n);
+	s->plc_n = placc.n;
+	memset(&placc, 0, sizeof(placc));
+}
+
+static void plc_reply(const uint8_t *b, size_t n)
+{
+	unsigned mmtype, count, i;
+	const uint8_t *e;
+
+	if (n < 20 || memcmp(b + 6, plc_cco, 6) || memcmp(b, plc_me, 6))
+		return;  /* not from the coordinator to us */
+	mmtype = b[15] | b[16] << 8;
+	if (mmtype == MMT_MME_ERROR) {
+		snprintf(plc_error, sizeof(plc_error), "coordinator refused the request "
+		         "(is %02x:%02x:%02x:%02x:%02x:%02x still the coordinator?)",
+		         plc_cco[0], plc_cco[1], plc_cco[2], plc_cco[3], plc_cco[4], plc_cco[5]);
+		plc_waiting = false;
+		return;
+	}
+	if (mmtype != MMT_NW_STATS + 1 || b[14] != 2)
+		return;
+	plc_waiting = false;
+	plc_misses = 0;
+	count = b[19];
+	for (i = 0, e = b + 20; i < count && e + 10 <= b + n; i++, e += 10) {
+		unsigned down = e[6] | e[7] << 8, up = e[8] | e[9] << 8;
+
+		if (memcmp(e, plc_sta, 6))
+			continue;
+		if (!down && !up) {  /* no traffic between them lately: no rate */
+			snprintf(plc_error, sizeof(plc_error), "no current rate for our station");
+			return;
+		}
+		placc.down += down;
+		placc.up += up;
+		if (placc.n < 65535)
+			placc.n++;
+		plc_last_down = (uint16_t)down;
+		plc_last_up = (uint16_t)up;
+		plc_last_ok = (uint32_t)time(NULL);
+		plc_error[0] = '\0';
+		return;
+	}
+	snprintf(plc_error, sizeof(plc_error), "station %02x:%02x:%02x:%02x:%02x:%02x isn't in the coordinator's list",
+	         plc_sta[0], plc_sta[1], plc_sta[2], plc_sta[3], plc_sta[4], plc_sta[5]);
+}
+
+static void plc_cb(struct uloop_fd *fd, unsigned int events)
+{
+	uint8_t b[1600];
+	ssize_t n;
+
+	(void)events;
+	while ((n = recv(fd->fd, b, sizeof(b), 0)) > 0)
+		plc_reply(b, (size_t)n);
+}
+
+static void plc_request(void)
+{
+	uint8_t f[60] = { 0 };
+	struct sockaddr_ll sa = { .sll_family = AF_PACKET, .sll_ifindex = plc_ifindex, .sll_halen = 6 };
+
+	if (plc_fd.fd < 0)
+		return;
+	if (plc_waiting && ++plc_misses >= PLC_MISSES)
+		snprintf(plc_error, sizeof(plc_error), "no answer from the coordinator (%u requests)", plc_misses);
+	memcpy(f, plc_cco, 6);
+	memcpy(f + 6, plc_me, 6);
+	f[12] = ETH_P_HPAV >> 8;
+	f[13] = ETH_P_HPAV & 0xff;
+	f[14] = 2;                       /* MMV: HomePlug AV 2.0 */
+	f[15] = MMT_NW_STATS & 0xff;     /* MMTYPE, little-endian */
+	f[16] = MMT_NW_STATS >> 8;
+	/* f[17..18]: fragmentation info 0 = not fragmented; no payload */
+	memcpy(sa.sll_addr, plc_cco, 6);
+	if (sendto(plc_fd.fd, f, sizeof(f), 0, (struct sockaddr *)&sa, sizeof(sa)) < 0)
+		snprintf(plc_error, sizeof(plc_error), "send on %s: %s", cfg_plc_iface, strerror(errno));
+	else
+		plc_waiting = true;
+}
+
+static bool plc_open(void)
+{
+	struct ifreq ifr;
+	struct sockaddr_ll sa = { .sll_family = AF_PACKET, .sll_protocol = htons(ETH_P_HPAV) };
+
+	if (!parse_mac(cfg_plc_cco, plc_cco) || !parse_mac(cfg_plc_sta, plc_sta)) {
+		syslog(LOG_ERR, "powerline: coordinator and station must be MAC addresses (aa:bb:cc:dd:ee:ff)");
+		return false;
+	}
+	plc_fd.fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, htons(ETH_P_HPAV));
+	if (plc_fd.fd < 0) {
+		snprintf(plc_error, sizeof(plc_error), "socket: %s", strerror(errno));
+		goto fail;
+	}
+	memset(&ifr, 0, sizeof(ifr));
+	snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", cfg_plc_iface);
+	if (ioctl(plc_fd.fd, SIOCGIFINDEX, &ifr) < 0 || (plc_ifindex = ifr.ifr_ifindex,
+	    ioctl(plc_fd.fd, SIOCGIFHWADDR, &ifr) < 0)) {
+		snprintf(plc_error, sizeof(plc_error), "interface %s: %s", cfg_plc_iface, strerror(errno));
+		goto fail;
+	}
+	memcpy(plc_me, ifr.ifr_hwaddr.sa_data, 6);
+	sa.sll_ifindex = plc_ifindex;
+	if (bind(plc_fd.fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+		snprintf(plc_error, sizeof(plc_error), "bind %s: %s", cfg_plc_iface, strerror(errno));
+		goto fail;
+	}
+	plc_fd.cb = plc_cb;
+	uloop_fd_add(&plc_fd, ULOOP_READ);
+	return true;
+fail:
+	syslog(LOG_ERR, "powerline rate disabled: %s", plc_error);
+	if (plc_fd.fd >= 0)
+		close(plc_fd.fd);
+	plc_fd.fd = -1;
+	return false;
+}
+
 static struct uloop_timeout sample_timer;
 
 static void sample_timer_cb(struct uloop_timeout *t)
@@ -1513,6 +1735,7 @@ static void sample_timer_cb(struct uloop_timeout *t)
 		snprintf(last_error, sizeof(last_error), "system clock not set (waiting for NTP)");
 		return;
 	}
+	plc_request();  /* answered within milliseconds, before the HTTP sample ends */
 	http.busy = true;
 	http.have_pending = false;
 	http.stage = cookie[0] ? STAGE_STATS : STAGE_TOKEN;
@@ -1567,6 +1790,11 @@ static void add_sample(struct blob_buf *buf, const char *name, const struct samp
 			blobmsg_add_u32(buf, "gw_rtt_avg", s->gw_rtt_avg);
 			blobmsg_add_u32(buf, "gw_rtt_max", s->gw_rtt_max);
 		}
+	}
+	if (s->plc_n) {
+		blobmsg_add_u32(buf, "plc_down", s->plc_down);
+		blobmsg_add_u32(buf, "plc_up", s->plc_up);
+		blobmsg_add_u32(buf, "plc_samples", s->plc_n);
 	}
 	blobmsg_close_table(buf, t);
 }
@@ -1745,6 +1973,24 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	}
 	if (cfg_signal && signal_error[0])
 		blobmsg_add_string(&b, "signal_error", signal_error);
+	if (cfg_plc_cco || cfg_plc_sta) {
+		void *t = blobmsg_open_table(&b, "powerline");
+
+		blobmsg_add_u8(&b, "enabled", plc_fd.fd >= 0);
+		blobmsg_add_string(&b, "interface", cfg_plc_iface);
+		if (cfg_plc_cco)
+			blobmsg_add_string(&b, "coordinator", cfg_plc_cco);
+		if (cfg_plc_sta)
+			blobmsg_add_string(&b, "station", cfg_plc_sta);
+		if (plc_last_ok) {
+			blobmsg_add_u32(&b, "last_reading", plc_last_ok);
+			blobmsg_add_u32(&b, "last_down", plc_last_down);
+			blobmsg_add_u32(&b, "last_up", plc_last_up);
+		}
+		if (plc_error[0])
+			blobmsg_add_string(&b, "error", plc_error);
+		blobmsg_close_table(&b, t);
+	}
 	return ubus_send_reply(ctx, req, b.head);
 }
 
@@ -1754,10 +2000,13 @@ static const struct ubus_method methods[] = {
 	UBUS_METHOD_NOARG("status", m_status),
 };
 
-static struct ubus_object_type obj_type = UBUS_OBJECT_TYPE("huawei.traffic", methods);
+#ifndef OBJ_NAME
+#define OBJ_NAME "huawei.traffic"  /* tests build with another name */
+#endif
+static struct ubus_object_type obj_type = UBUS_OBJECT_TYPE(OBJ_NAME, methods);
 
 static struct ubus_object ubus_obj = {
-	.name = "huawei.traffic",
+	.name = OBJ_NAME,
 	.type = &obj_type,
 	.methods = methods,
 	.n_methods = ARRAY_SIZE(methods),
@@ -1799,9 +2048,9 @@ static void usage(const char *prog)
 		"  -H host      Huawei router IPv4 address (default 192.168.0.1)\n"
 		"  -P port      HTTP port (default 80)\n"
 		"  -i seconds   sampling interval (default 60)\n"
-		"  -n samples   fine history size (default 4320, 72 bytes each)\n"
+		"  -n samples   fine history size (default 4320, 80 bytes each)\n"
 		"  -c seconds   coarse tier interval (default 3600, 0 disables it)\n"
-		"  -N samples   coarse history size (default 8760, 72 bytes each)\n"
+		"  -N samples   coarse history size (default 8760, 80 bytes each)\n"
 		"  -f file      fine history file: loaded at start, saved on exit\n"
 		"  -F file      coarse history file (default: <fine file>.coarse)\n"
 		"  -S seconds   also save the history files this often (default: exit only)\n"
@@ -1811,6 +2060,9 @@ static void usage(const char *prog)
 		"  -L           don't measure internet latency\n"
 		"  -g           don't measure latency to the Huawei itself (the local link)\n"
 		"  -T address   latency target (repeatable, up to 4; default 1.1.1.1 and 8.8.8.8)\n"
+		"  -A mac       powerline rate: the HomePlug AV coordinator to ask (with -B)\n"
+		"  -B mac       powerline rate: our own powerline adapter (the station to report)\n"
+		"  -I iface     powerline rate: interface to ask on (default br-lan)\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
 }
@@ -1821,7 +2073,7 @@ int main(int argc, char **argv)
 
 	static char coarse_default[PATH_MAX];
 
-	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:LgT:h")) != -1) {
+	while ((opt = getopt(argc, argv, "H:P:i:n:c:N:f:F:S:s:GD:E:LgT:A:B:I:h")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'P': cfg_port = optarg; break;
@@ -1850,6 +2102,9 @@ int main(int argc, char **argv)
 			cfg_targets[cfg_ntargets++] = optarg;
 			break;
 		}
+		case 'A': cfg_plc_cco = *optarg ? optarg : NULL; break;
+		case 'B': cfg_plc_sta = *optarg ? optarg : NULL; break;
+		case 'I': cfg_plc_iface = optarg; break;
 		case 'D': cfg_flash_dir = *optarg ? optarg : NULL; break;
 		case 'E': cfg_flash_every = parse_uint(optarg, "flash interval", 300, 30 * 86400); break;
 		default: usage(argv[0]);
@@ -1892,6 +2147,13 @@ int main(int argc, char **argv)
 	uloop_timeout_set(&sample_timer, 1000);
 	if ((cfg_latency || cfg_gw_ping) && !ping_open())
 		cfg_latency = gw_ping = false;
+	if (cfg_plc_cco || cfg_plc_sta) {
+		if (!cfg_plc_cco || !cfg_plc_sta)
+			snprintf(plc_error, sizeof(plc_error), "needs both the coordinator (-A) and our station (-B)");
+		else if (plc_open())
+			syslog(LOG_INFO, "powerline rate: asking %s on %s for station %s",
+			       cfg_plc_cco, cfg_plc_iface, cfg_plc_sta);
+	}
 	if (cfg_flash_dir) {
 		flash_timer.cb = flash_timer_cb;
 		uloop_timeout_set(&flash_timer, cfg_flash_every * 1000);

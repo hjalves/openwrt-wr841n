@@ -201,25 +201,26 @@ def main():
     elif a.format == "csv":
         extra = ("rsrp", "rsrq", "sinr", "rssi", "signal_samples", "cell_id", "conn_status", "net_type",
                  "ping_sent", "ping_lost", "ping_ok", "rtt_min", "rtt_avg", "rtt_max",
-                 "gw_sent", "gw_lost", "gw_rtt_avg", "gw_rtt_max")
+                 "gw_sent", "gw_lost", "gw_rtt_avg", "gw_rtt_max", "plc_down", "plc_up", "plc_samples")
         print("time,iso_time,uptime_s,download_b,upload_b,total_download_b,total_upload_b,"
               "rsrp_dbm,rsrq_db,sinr_db,rssi_dbm,signal_samples,cell_id,conn_status,net_type,"
               "ping_sent,ping_lost,ping_ok_mask,rtt_min_ms,rtt_avg_ms,rtt_max_ms,"
-              "gw_sent,gw_lost,gw_rtt_avg_ms,gw_rtt_max_ms")
+              "gw_sent,gw_lost,gw_rtt_avg_ms,gw_rtt_max_ms,plc_down_mbps,plc_up_mbps,plc_samples")
         for s in samples:
             print(f"{s['time']},{iso(s['time'])},{s['uptime']},{s['download']},"
                   f"{s['upload']},{s['total_download']},{s['total_upload']}," +
                   ",".join(str(s.get(k, "")) for k in extra))
     else:
-        print(f"{'time':19}  {'session up':>16}  {'download':>10}  {'upload':>10}  {'SINR':>6}  {'RSRP':>8}  {'latency':>8}  {'loss':>5}  {'powerline':>9}  {'loss':>5}  cell")
+        print(f"{'time':19}  {'session up':>16}  {'download':>10}  {'upload':>10}  {'SINR':>6}  {'RSRP':>8}  {'latency':>8}  {'loss':>5}  {'powerline':>9}  {'loss':>5}  {'PHY down/up':>11}  cell")
         for s in samples:
             sig = (f"{s['sinr']:>3} dB  {s['rsrp']:>4} dBm" if "sinr" in s else f"{'-':>6}  {'-':>8}")
             lat = f"{s['rtt_avg']:>5} ms" if "rtt_avg" in s else f"{'-':>8}"
             loss = f"{100 * s['ping_lost'] // s['ping_sent']:>4}%" if s.get("ping_sent") else f"{'-':>5}"
             pl = f"{s['gw_rtt_avg']:>6} ms" if "gw_rtt_avg" in s else f"{'-':>9}"
             pll = f"{100 * s['gw_lost'] // s['gw_sent']:>4}%" if s.get("gw_sent") else f"{'-':>5}"
+            phy = f"{s['plc_down']:>5}/{s['plc_up']:<5}" if s.get("plc_samples") else f"{'-':>11}"
             print(f"{iso(s['time'])}  {str(dt.timedelta(seconds=s['uptime'])):>16}  "
-                  f"{human(s['download']):>10}  {human(s['upload']):>10}  {sig}  {lat}  {loss}  {pl}  {pll}  "
+                  f"{human(s['download']):>10}  {human(s['upload']):>10}  {sig}  {lat}  {loss}  {pl}  {pll}  {phy}  "
                   f"{cell_name(s['cell_id']) if s.get('cell_id') else '-'}")
 
 
