@@ -15,8 +15,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:720px;margin:0 auto;padding:48px 20px}
-h1{font-size:22px;font-weight:600;margin:0}
-.sub{color:var(--text2);margin:4px 0 28px}
+h1{font-size:22px;font-weight:600;margin:0 0 28px}
 .links{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
 a.card{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;transition:background .12s,border-color .12s}
 a.card:hover{background:var(--wash);border-color:var(--accent)}
@@ -27,12 +26,12 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:22px 0 0;color:var(--muted);font-size:13px}
 .foot a{color:var(--accent)}
 .card .live{margin-top:10px;color:var(--muted);font-size:13px;min-height:1.4em}
+@media (max-width:560px){main{padding:24px 14px 40px}h1{margin-bottom:20px}.links{gap:10px}a.card{padding:11px 16px}}
 </style>
 </head>
 <body>
 <main>
   <h1>OpenWrt router</h1>
-  <p class="sub" id="host">192.168.0.254</p>
   <nav class="links" aria-label="Router pages">
     <a class="card" href="/admin.html">
       <h2>Router admin</h2>
@@ -64,7 +63,6 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </main>
 <script>
 "use strict";
-document.getElementById("host").textContent = location.host;
 // One-line live summary; stays empty if huawei-trafficd isn't reachable.
 (async () => {
   try {
