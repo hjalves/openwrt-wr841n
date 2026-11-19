@@ -7,7 +7,7 @@ USE_PROCD=1
 PROG=/usr/sbin/tvremote
 
 start_service() {
-	local host mac broadcast port name poll wake_timeout off_window
+	local host mac broadcast port name poll wake_timeout off_window upnp_port
 
 	config_load tvremote
 	config_get host main host
@@ -18,12 +18,13 @@ start_service() {
 	config_get poll main poll 30
 	config_get wake_timeout main wake_timeout 40
 	config_get off_window main off_window 25
+	config_get upnp_port main upnp_port 9197
 
 	[ -n "$host" ] && [ -n "$mac" ] || { echo "tvremote: set host and mac in /etc/config/tvremote" >&2; return 1; }
 
 	procd_open_instance
 	procd_set_param command "$PROG" -H "$host" -m "$mac" -b "$broadcast" -p "$port" -n "$name" \
-		-P "$poll" -W "$wake_timeout" -O "$off_window"
+		-P "$poll" -W "$wake_timeout" -O "$off_window" -u "$upnp_port"
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
 }

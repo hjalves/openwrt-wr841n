@@ -19,6 +19,10 @@
  * probes the TV every so often (default 30 s), so switching it on with its
  * own remote is noticed too.
  *
+ * Volume: the TV's UPnP RenderingControl service (SOAP over HTTP, port 9197)
+ * reports the volume and mute state and sets an exact volume. It's read
+ * only while someone is asking (status calls) or right after volume keys.
+ *
  * Only the router's existing shared libraries are used: libubus, libubox and
  * uClibc. No TLS is needed.
  */
@@ -56,6 +60,12 @@
 #define RETRY_MS          1000   /* reconnect delay after a drop while on */
 #define QUEUE_MAX         8      /* keys pressed while the TV wakes up */
 #define KEY_MAX           40
+#define UPNP_PATH         "/upnp/control/RenderingControl1"
+#define UPNP_SERVICE      "urn:schemas-upnp-org:service:RenderingControl:1"
+#define UPNP_TIMEOUT      3000   /* ms per request */
+#define VOL_FRESH         2      /* s: a status call re-reads an older volume */
+#define VOL_BACKOFF       30     /* s: after a failed volume request */
+#define VOL_KEY_DELAY     400    /* ms: re-read the volume after volume keys */
 
 /* ---- configuration ---- */
 static const char *cfg_host;
@@ -68,6 +78,7 @@ static bool have_mac;
 static unsigned cfg_poll = 30;      /* s, probe while off; 0 = only on request */
 static unsigned cfg_wake = 40;      /* s, give up waking after this */
 static unsigned cfg_offwin = 25;    /* s, the TV's shutdown window */
+static const char *cfg_upnp = "9197"; /* UPnP port for the volume; NULL = off */
 
 /* ---- power state ---- */
 enum tv_state { S_OFF, S_WAKING, S_ON, S_TURNING_OFF };
@@ -93,6 +104,20 @@ static char last_error[160];
 static time_t last_error_time;
 static unsigned keys_sent, wol_sent;
 
+/* ---- volume (UPnP) ---- */
+static int vol = -1, muted = -1;        /* -1 = unknown */
+static time_t vol_time, vol_retry_after;
+static int vol_set = -1;                /* volume waiting to be set */
+static bool need_vol, need_mute;
+enum upnp_op { U_IDLE, U_SET, U_GETVOL, U_GETMUTE };
+static enum upnp_op u_op = U_IDLE;
+static struct uloop_fd ufd = { .fd = -1 };
+static struct uloop_timeout u_timer, vol_key_timer;
+static char ureq[1024], ubuf[4096];
+static size_t ureq_len, usent, ulen;
+static void upnp_next(void);
+static void upnp_cancel(void);
+
 static void set_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void set_error(const char *fmt, ...)
 {
@@ -112,6 +137,15 @@ static void set_state(enum tv_state s)
 	syslog(LOG_INFO, "TV %s -> %s", state_names[state], state_names[s]);
 	state = s;
 	state_since = time(NULL);
+	if (s != S_ON) {  /* the volume is only known, and only asked, while on */
+		upnp_cancel();
+		vol = muted = vol_set = -1;
+		need_vol = need_mute = false;
+		vol_time = vol_retry_after = 0;
+	} else if (cfg_upnp) {
+		need_vol = need_mute = true;
+		upnp_next();
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -578,6 +612,209 @@ static void power_off_now(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Volume over UPnP RenderingControl (one request at a time) */
+
+static void upnp_close(void)
+{
+	uloop_timeout_cancel(&u_timer);
+	if (ufd.fd >= 0) {
+		uloop_fd_delete(&ufd);
+		close(ufd.fd);
+		ufd.fd = -1;
+	}
+}
+
+static void upnp_cancel(void)
+{
+	upnp_close();
+	u_op = U_IDLE;
+}
+
+/* Value of <tag>number</tag> in the reply, or -1. */
+static int xml_int(const char *tag)
+{
+	char open[40];
+	const char *p;
+
+	snprintf(open, sizeof(open), "<%s>", tag);
+	p = strstr(ubuf, open);
+	if (!p)
+		return -1;
+	p += strlen(open);
+	return isdigit((unsigned char)*p) ? atoi(p) : -1;
+}
+
+static void upnp_done(bool ok, const char *why)
+{
+	enum upnp_op op = u_op;
+	int v;
+
+	upnp_close();
+	u_op = U_IDLE;
+	ubuf[ulen] = 0;
+	if (ok && strncmp(ubuf, "HTTP/1.1 200", 12) && strncmp(ubuf, "HTTP/1.0 200", 12)) {
+		char *eol = strchr(ubuf, '\r');
+
+		if (eol)
+			*eol = 0;
+		ok = false;
+		why = ulen ? ubuf : "empty reply";
+	}
+	if (ok) {
+		switch (op) {
+		case U_SET:
+			need_vol = true;  /* read back what the TV made of it */
+			break;
+		case U_GETVOL:
+			if ((v = xml_int("CurrentVolume")) >= 0) {
+				vol = v;
+				vol_time = time(NULL);
+			}
+			break;
+		case U_GETMUTE:
+			if ((v = xml_int("CurrentMute")) >= 0)
+				muted = v != 0;
+			break;
+		case U_IDLE:
+			break;
+		}
+	} else if (state == S_ON) {
+		set_error("volume (UPnP port %s): %.100s", cfg_upnp, why);
+		vol_retry_after = time(NULL) + VOL_BACKOFF;
+		need_vol = need_mute = false;
+		vol_set = -1;
+		return;
+	}
+	upnp_next();
+}
+
+static void upnp_cb(struct uloop_fd *u, unsigned int events)
+{
+	(void)events;
+	if (u->error) {
+		int err = 0;
+		socklen_t l = sizeof(err);
+
+		getsockopt(u->fd, SOL_SOCKET, SO_ERROR, &err, &l);
+		upnp_done(false, err ? strerror(err) : "connection error");
+		return;
+	}
+	if (usent < ureq_len) {  /* connected (or failed): send the request */
+		ssize_t n = send(u->fd, ureq + usent, ureq_len - usent, MSG_NOSIGNAL);
+
+		if (n < 0) {
+			if (errno == EAGAIN || errno == EINTR)
+				return;
+			upnp_done(false, strerror(errno));
+			return;
+		}
+		usent += n;
+		if (usent == ureq_len) {
+			uloop_fd_delete(u);
+			uloop_fd_add(u, ULOOP_READ);
+		}
+		return;
+	}
+	for (;;) {
+		ssize_t n;
+
+		if (ulen == sizeof(ubuf) - 1) {  /* enough to parse */
+			upnp_done(true, NULL);
+			return;
+		}
+		n = recv(u->fd, ubuf + ulen, sizeof(ubuf) - 1 - ulen, 0);
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0) {
+			upnp_done(false, strerror(errno));
+			return;
+		}
+		if (n == 0) {  /* Connection: close */
+			upnp_done(true, NULL);
+			return;
+		}
+		ulen += n;
+	}
+}
+
+static void upnp_timeout_cb(struct uloop_timeout *t)
+{
+	(void)t;
+	upnp_done(false, "no answer");
+}
+
+static void upnp_start(enum upnp_op op, const char *action, const char *args)
+{
+	char body[512];
+	int nb = snprintf(body, sizeof(body),
+		"<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+		"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+		"s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+		"<u:%s xmlns:u=\"" UPNP_SERVICE "\"><InstanceID>0</InstanceID>"
+		"<Channel>Master</Channel>%s</u:%s></s:Body></s:Envelope>", action, args, action);
+
+	ureq_len = snprintf(ureq, sizeof(ureq),
+		"POST " UPNP_PATH " HTTP/1.1\r\n"
+		"Host: %s:%s\r\n"
+		"Content-Type: text/xml; charset=\"utf-8\"\r\n"
+		"SOAPACTION: \"" UPNP_SERVICE "#%s\"\r\n"
+		"Content-Length: %d\r\n"
+		"Connection: close\r\n\r\n%s", cfg_host, cfg_upnp, action, nb, body);
+	usent = ulen = 0;
+	u_op = op;
+	ufd.fd = usock(USOCK_TCP | USOCK_NONBLOCK | USOCK_NUMERIC | USOCK_IPV4ONLY, cfg_host, cfg_upnp);
+	if (ufd.fd < 0) {
+		upnp_done(false, strerror(errno));
+		return;
+	}
+	fcntl(ufd.fd, F_SETFD, FD_CLOEXEC);
+	ufd.cb = upnp_cb;
+	uloop_fd_add(&ufd, ULOOP_WRITE);
+	uloop_timeout_set(&u_timer, UPNP_TIMEOUT);
+}
+
+/* Starts the next wanted request, if any: a set first, then the reads. */
+static void upnp_next(void)
+{
+	char args[48];
+
+	if (u_op != U_IDLE || !cfg_upnp || state != S_ON)
+		return;
+	if (vol_set >= 0) {
+		snprintf(args, sizeof(args), "<DesiredVolume>%d</DesiredVolume>", vol_set);
+		vol_set = -1;
+		upnp_start(U_SET, "SetVolume", args);
+	} else if (need_vol) {
+		need_vol = false;
+		upnp_start(U_GETVOL, "GetVolume", "");
+	} else if (need_mute) {
+		need_mute = false;
+		upnp_start(U_GETMUTE, "GetMute", "");
+	}
+}
+
+/* Re-read the volume if it's older than VOL_FRESH (called on status). */
+static void vol_refresh(bool force)
+{
+	time_t now = time(NULL);
+
+	if (!cfg_upnp || state != S_ON || now < vol_retry_after)
+		return;
+	if (force || now - vol_time >= VOL_FRESH) {
+		need_vol = need_mute = true;
+		upnp_next();
+	}
+}
+
+static void vol_key_cb(struct uloop_timeout *t)
+{
+	(void)t;
+	vol_refresh(true);
+}
+
+/* ------------------------------------------------------------------ */
 /* ubus */
 
 static struct blob_buf b;
@@ -615,12 +852,17 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_string(&b, "host", cfg_host);
 	blobmsg_add_string(&b, "mac", mac);
 	blobmsg_add_string(&b, "name", cfg_name);
+	if (vol >= 0)
+		blobmsg_add_u32(&b, "volume", vol);
+	if (muted >= 0)
+		blobmsg_add_u8(&b, "mute", muted);
 	blobmsg_add_u32(&b, "keys_sent", keys_sent);
 	blobmsg_add_u32(&b, "wol_sent", wol_sent);
 	if (last_error[0]) {
 		blobmsg_add_string(&b, "last_error", last_error);
 		blobmsg_add_u32(&b, "last_error_age", (uint32_t)(now - last_error_time));
 	}
+	vol_refresh(false);  /* for the next status call: keeps it fresh while watched */
 	return ubus_send_reply(ctx, req, b.head);
 }
 
@@ -715,6 +957,8 @@ static int m_key(struct ubus_context *ctx, struct ubus_object *obj,
 	if (state == S_ON && phase == C_READY) {
 		if (!send_key(cmd, key))
 			return UBUS_STATUS_UNKNOWN_ERROR;
+		if (!strcmp(key, "KEY_VOLUP") || !strcmp(key, "KEY_VOLDOWN") || !strcmp(key, "KEY_MUTE"))
+			uloop_timeout_set(&vol_key_timer, VOL_KEY_DELAY);  /* after the last of a burst */
 		reply_state(ctx, req, "sent");
 		return 0;
 	}
@@ -728,11 +972,42 @@ static int m_key(struct ubus_context *ctx, struct ubus_object *obj,
 	return UBUS_STATUS_NO_DATA;  /* off or switching off */
 }
 
+enum { V_VOLUME, __V_MAX };
+static const struct blobmsg_policy vol_policy[__V_MAX] = {
+	[V_VOLUME] = { .name = "volume", .type = BLOBMSG_TYPE_INT32 },
+};
+
+static int m_set_volume(struct ubus_context *ctx, struct ubus_object *obj,
+                        struct ubus_request_data *req, const char *method, struct blob_attr *msg)
+{
+	struct blob_attr *tb[__V_MAX];
+	int v;
+
+	(void)obj; (void)method;
+	blobmsg_parse(vol_policy, __V_MAX, tb, blob_data(msg), blob_len(msg));
+	if (!tb[V_VOLUME] || (v = (int32_t)blobmsg_get_u32(tb[V_VOLUME])) < 0 || v > 100)
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	if (!cfg_upnp)
+		return UBUS_STATUS_NOT_SUPPORTED;
+	if (state != S_ON)
+		return UBUS_STATUS_NO_DATA;
+	/* Only the latest value waits: dragging a slider sends many. */
+	vol_set = vol = v;
+	vol_retry_after = 0;
+	upnp_next();
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "state", state_names[state]);
+	blobmsg_add_u32(&b, "volume", v);
+	ubus_send_reply(ctx, req, b.head);
+	return 0;
+}
+
 static const struct ubus_method methods[] = {
 	UBUS_METHOD_NOARG("status", m_status),
 	UBUS_METHOD_NOARG("power_on", m_power_on),
 	UBUS_METHOD_NOARG("power_off", m_power_off),
 	UBUS_METHOD("key", m_key, key_policy),
+	UBUS_METHOD("set_volume", m_set_volume, vol_policy),
 };
 
 static struct ubus_object_type obj_type = UBUS_OBJECT_TYPE("tv", methods);
@@ -790,7 +1065,7 @@ static void usage(const char *prog)
 {
 	fprintf(stderr,
 		"Usage: %s -H address -m mac [options]\n"
-		"  -H address   the TV's IPv4 address (give it a fixed DHCP lease)\n"
+		"  -H address   the TV's IPv4 address (must not change)\n"
 		"  -m mac       the TV's MAC address, for Wake-on-LAN\n"
 		"  -b address   broadcast address for Wake-on-LAN (default 255.255.255.255)\n"
 		"  -p port      the TV's remote-control port (default 8001)\n"
@@ -798,6 +1073,7 @@ static void usage(const char *prog)
 		"  -P seconds   probe the TV this often while off (default 30, 0 = never)\n"
 		"  -W seconds   give up waking the TV after this (default 40)\n"
 		"  -O seconds   the TV's shutdown window after KEY_POWER (default 25)\n"
+		"  -u port      the TV's UPnP port, for the volume (default 9197, 0 = no volume)\n"
 		"  -s socket    ubus socket path\n", prog);
 	exit(2);
 }
@@ -809,7 +1085,7 @@ int main(int argc, char **argv)
 	unsigned seed;
 	FILE *f;
 
-	while ((opt = getopt(argc, argv, "H:m:b:p:n:P:W:O:s:h")) != -1) {
+	while ((opt = getopt(argc, argv, "H:m:b:p:n:P:W:O:u:s:h")) != -1) {
 		switch (opt) {
 		case 'H': cfg_host = optarg; break;
 		case 'm':
@@ -831,6 +1107,9 @@ int main(int argc, char **argv)
 		case 'P': cfg_poll = parse_uint(optarg, "probe interval", 0, 86400); break;
 		case 'W': cfg_wake = parse_uint(optarg, "wake timeout", 5, 600); break;
 		case 'O': cfg_offwin = parse_uint(optarg, "shutdown window", 1, 120); break;
+		case 'u':
+			cfg_upnp = parse_uint(optarg, "UPnP port", 0, 65535) ? optarg : NULL;
+			break;
 		case 's': cfg_socket = optarg; break;
 		default: usage(argv[0]);
 		}
@@ -863,6 +1142,8 @@ int main(int argc, char **argv)
 	conn_timer.cb = conn_timeout_cb;
 	poll_timer.cb = poll_cb;
 	off_timer.cb = off_cb;
+	u_timer.cb = upnp_timeout_cb;
+	vol_key_timer.cb = vol_key_cb;
 	uconn.path = cfg_socket;
 	uconn.cb = ubus_connected;
 	ubus_auto_connect(&uconn);
@@ -872,6 +1153,7 @@ int main(int argc, char **argv)
 
 	uloop_run();  /* until SIGTERM/SIGINT */
 
+	upnp_cancel();
 	if (phase != C_IDLE) {
 		uloop_fd_delete(&sock);
 		close(sock.fd);

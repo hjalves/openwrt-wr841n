@@ -45,6 +45,13 @@ summary{padding:10px 14px;cursor:pointer;color:var(--text-secondary);font-size:1
 details .pad{padding:0 10px 10px}
 .hint{color:var(--muted);font-size:12px;text-align:center;margin-top:16px}
 .off .ctl{opacity:.45}
+.vol{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);padding:10px 14px 6px}
+.vol[hidden]{display:none}
+.volhead{display:flex;justify-content:space-between;align-items:baseline;color:var(--text-secondary);font-size:13px}
+.volhead b{color:var(--text-primary);font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.vol input{width:100%;height:32px;margin:2px 0 0;accent-color:var(--series-1);touch-action:pan-y}
+.vol.muted b{color:var(--critical)}
+.vol.muted input{opacity:.5}
 </style>
 </head>
 <body>
@@ -90,6 +97,11 @@ details .pad{padding:0 10px 10px}
     <span>Ch</span>
     <button class="k" data-key="KEY_CHDOWN" data-repeat aria-label="Channel down">−</button>
   </div>
+</div>
+
+<div class="vol" id="volBox" hidden>
+  <label class="volhead" for="vol"><span>Volume</span><b id="volVal">–</b></label>
+  <input type="range" id="vol" min="0" max="100" step="1">
 </div>
 
 <details class="ctl">
@@ -150,8 +162,41 @@ function show(s) {
   $("powerText").textContent = st === "on" || st === "waking" ? "Turn off" : "Turn on";
   $("power").setAttribute("aria-label", st === "on" || st === "waking" ? "Switch the TV off" : "Switch the TV on");
   $("root").classList.toggle("off", st === "off" || st === "turning_off");
+  showVol(s);
   schedule(busy ? 1000 : 4000);
 }
+
+// ---- volume: shown while the TV is on and reports it (UPnP) ----
+let volTouched = 0, volWanted = null, volBusy = false, volTimer = null;
+function volLabel(v, mute) { return mute ? `Muted (${v})` : String(v); }
+function showVol(s) {
+  const box = $("volBox");
+  box.hidden = s.state !== "on" || s.volume == null;
+  if (box.hidden || volBusy || Date.now() - volTouched < 2500) return;  // don't fight a dragging finger
+  $("vol").value = s.volume;
+  $("volVal").textContent = volLabel(s.volume, s.mute);
+  box.classList.toggle("muted", !!s.mute);
+}
+// One request at a time, then the latest value: a drag sends a few, not hundreds.
+async function sendVol() {
+  volTimer = null;
+  if (volBusy || volWanted === null) return;
+  const v = volWanted;
+  volWanted = null;
+  volBusy = true;
+  try { await rpc("set_volume", {volume: v}); }
+  catch (e) { say(e.code === 9 ? "The TV is off" : "Volume: " + e.message); }
+  volBusy = false;
+  if (volWanted !== null) volTimer = setTimeout(sendVol, 120);
+}
+function volInput() {
+  volTouched = Date.now();
+  volWanted = +$("vol").value;
+  $("volVal").textContent = volWanted;
+  if (!volTimer) sendVol();
+}
+$("vol").addEventListener("input", volInput);
+$("vol").addEventListener("change", volInput);
 
 async function refresh() {
   try { show(await rpc("status")); }
@@ -173,6 +218,7 @@ async function key(k) {
     const r = await rpc("key", {key: k});
     if (r.queued) say("The TV is switching on; the key will be sent when it's ready");
     if (tv && r.state !== tv.state) refresh();
+    else if (/^KEY_(VOLUP|VOLDOWN|MUTE)$/.test(k)) schedule(700);  // show the new volume
   } catch (e) { say(e.message); if (e.code === 9) refresh(); }
 }
 
@@ -215,7 +261,7 @@ const KEYS = {ArrowUp: "KEY_UP", ArrowDown: "KEY_DOWN", ArrowLeft: "KEY_LEFT", A
   Enter: "KEY_ENTER", Backspace: "KEY_RETURN", Escape: "KEY_EXIT", h: "KEY_HOME", m: "KEY_MUTE",
   "+": "KEY_VOLUP", "=": "KEY_VOLUP", "-": "KEY_VOLDOWN"};
 document.addEventListener("keydown", e => {
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === "INPUT") return;
   if (e.key === "Enter" && document.activeElement && document.activeElement.tagName === "BUTTON") return;
   const k = KEYS[e.key] || (/^[0-9]$/.test(e.key) ? "KEY_" + e.key : null);
   if (!k) return;
