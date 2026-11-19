@@ -69,7 +69,11 @@ Requests during a transition aren't lost:
 - 0.4 s after the last of a burst of `KEY_VOLUP`, `KEY_VOLDOWN` or `KEY_MUTE`;
 - after each `set_volume`, to read back what the TV made of it.
 
-One UPnP request runs at a time. Of several `set_volume` calls in quick succession (a dragged slider), only the latest waiting value is sent. After a failed request the volume isn't asked for again for 30 s, so a TV without the service doesn't fill the log.
+One UPnP request runs at a time. Of several `set_volume` calls in quick succession (a dragged slider), only the latest waiting value is sent.
+
+**Failures:**
+- **Just after the TV comes on:** the TV's UPnP service starts after its remote channel (seen on 2026-11-19 after about 8 minutes in standby: "connection refused" when the channel had just opened). So for the first 30 s after the TV comes on, a failed request is retried every 2 s, without logging an error.
+- **After that,** a failed request means the volume isn't asked for again for 30 s, so a TV without the service doesn't fill the log.
 
 If the TV ever sends `ms.channel.unauthorized` (a firmware that wants approval), the daemon logs it and `status` shows it in `last_error`. Allow "OpenWrt" on the TV under Settings → General → External Device Manager → Device Connection Manager.
 

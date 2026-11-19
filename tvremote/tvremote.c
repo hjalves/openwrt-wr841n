@@ -74,6 +74,9 @@
 #define UPNP_TIMEOUT      3000   /* ms per request */
 #define VOL_FRESH         2      /* s: a status call re-reads an older volume */
 #define VOL_BACKOFF       30     /* s: after a failed volume request */
+#define VOL_STARTUP       30     /* s: the TV's UPnP service starts after its remote
+                                    channel; retry quietly this long after it's on */
+#define VOL_STARTUP_RETRY 2000   /* ms */
 #define VOL_KEY_DELAY     400    /* ms: re-read the volume after volume keys */
 
 /* ---- configuration ---- */
@@ -818,8 +821,23 @@ static void upnp_done(bool ok, const char *why)
 			break;
 		}
 	} else if (state == S_ON) {
+		time_t now = time(NULL);
+
+		if (now - state_since < VOL_STARTUP) {
+			/* Just came on: UPnP isn't up yet. Try again shortly, keeping
+			 * whatever was wanted (including a volume to set). */
+			if (op == U_SET && vol >= 0 && vol_set < 0)
+				vol_set = vol;
+			if (op == U_GETVOL)
+				need_vol = true;
+			if (op == U_GETMUTE)
+				need_mute = true;
+			vol_retry_after = 0;
+			uloop_timeout_set(&vol_key_timer, VOL_STARTUP_RETRY);
+			return;
+		}
 		set_error("volume (UPnP port %s): %.100s", cfg_upnp, why);
-		vol_retry_after = time(NULL) + VOL_BACKOFF;
+		vol_retry_after = now + VOL_BACKOFF;
 		need_vol = need_mute = false;
 		vol_set = -1;
 		return;
@@ -950,7 +968,10 @@ static void vol_refresh(bool force)
 static void vol_key_cb(struct uloop_timeout *t)
 {
 	(void)t;
-	vol_refresh(true);
+	if (vol_set >= 0 || need_vol || need_mute)
+		upnp_next();      /* retry what's pending (startup retries) */
+	else
+		vol_refresh(true);  /* re-read after volume keys */
 }
 
 /* ------------------------------------------------------------------ */
