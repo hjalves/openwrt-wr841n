@@ -25,6 +25,8 @@ header{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;
 .dot.on{background:var(--good)}.dot.busy{background:var(--warning)}.dot.err{background:var(--critical)}
 .msg{min-height:18px;margin:-8px 0 8px;color:var(--critical);font-size:12px;text-align:center}
 .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pad.top{grid-template-columns:1.3fr 1fr 1fr 1fr;gap:8px}
+.pad.top .k{font-size:13px}
 .k{display:flex;align-items:center;justify-content:center;gap:4px;min-height:52px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);color:var(--text-primary);font:inherit;font-size:14px;cursor:pointer;touch-action:manipulation;transition:background .08s}
 .k.down,.k:active{background:var(--press)}
 .k:focus-visible{outline:2px solid var(--series-1);outline-offset:2px}
@@ -46,7 +48,13 @@ details .pad{padding:0 10px 10px}
 .hint{color:var(--muted);font-size:12px;text-align:center;margin-top:16px}
 .off .ctl{opacity:.45}
 .vol{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);padding:10px 14px 6px}
-.vol[hidden]{display:none}
+.vol[hidden],.apps[hidden]{display:none}
+.apps{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1)}
+.apps summary{padding:10px 14px;cursor:pointer;color:var(--text-secondary);font-size:13px}
+.appgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:0 10px 10px}
+.appgrid .k{min-width:0;min-height:44px;padding:0 10px;font-size:13px;justify-content:flex-start}
+.appgrid .k span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg.info{color:var(--text-secondary)}
 .volhead{display:flex;justify-content:space-between;align-items:baseline;color:var(--text-secondary);font-size:13px}
 .volhead b{color:var(--text-primary);font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .vol input{width:100%;height:32px;margin:2px 0 0;accent-color:var(--series-1);touch-action:pan-y}
@@ -62,9 +70,10 @@ details .pad{padding:0 10px 10px}
 </header>
 <p class="msg" id="msg" aria-live="polite"></p>
 
-<div class="pad">
+<div class="pad top">
   <button class="k power" id="power" aria-label="Power"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.3 7a8 8 0 1 0 11.4 0"/></svg><small id="powerText">Power</small></button>
   <button class="k ctl" data-key="KEY_SOURCE">Source</button>
+  <button class="k ctl" data-key="KEY_HDMI" aria-label="Next HDMI input">HDMI</button>
   <button class="k ctl" data-key="KEY_MENU">Menu</button>
 </div>
 
@@ -103,6 +112,11 @@ details .pad{padding:0 10px 10px}
   <label class="volhead" for="vol"><span>Volume</span><b id="volVal">–</b></label>
   <input type="range" id="vol" min="0" max="100" step="1">
 </div>
+
+<details class="apps" id="appsBox" hidden>
+  <summary>Apps</summary>
+  <div class="appgrid" id="apps"></div>
+</details>
 
 <details class="ctl">
   <summary>Playback</summary>
@@ -144,8 +158,9 @@ async function rpc(method, args) {
   return j.result[1] || {};
 }
 
-function say(text) {
+function say(text, info) {
   $("msg").textContent = text || "";
+  $("msg").classList.toggle("info", !!info);
   clearTimeout(msgTimer);
   if (text) msgTimer = setTimeout(() => { $("msg").textContent = ""; }, 4000);
 }
@@ -163,8 +178,45 @@ function show(s) {
   $("power").setAttribute("aria-label", st === "on" || st === "waking" ? "Switch the TV off" : "Switch the TV on");
   $("root").classList.toggle("off", st === "off" || st === "turning_off");
   showVol(s);
+  if (!appsLoaded) loadApps();  // the daemon keeps the list while the TV is off
   schedule(busy ? 1000 : 4000);
 }
+
+// ---- apps: the TV's own list (names as the TV gives them), in its order ----
+let appsLoaded = false, appsLoading = false;
+async function loadApps() {
+  if (appsLoading) return;
+  appsLoading = true;
+  try {
+    const r = await rpc("apps");
+    const list = r.apps || [];
+    if (list.length) {
+      appsLoaded = true;
+      $("apps").replaceChildren(...list.map(a => {
+        const b = document.createElement("button");
+        b.className = "k";
+        b.title = a.name;
+        const t = document.createElement("span");
+        t.textContent = a.name;
+        b.append(t);
+        b.addEventListener("click", () => launch(a));
+        return b;
+      }));
+      $("appsBox").hidden = false;
+    }
+  } catch (e) { /* tried again on the next status while the TV is on */ }
+  appsLoading = false;
+}
+async function launch(a) {
+  if (navigator.vibrate) navigator.vibrate(10);
+  try {
+    const r = await rpc("launch", {app: a.id});
+    say(r.queued ? `Switching the TV on; ${a.name} will open when it's ready` : `Opening ${a.name}…`, true);
+    if (tv && r.state !== tv.state) refresh();
+  } catch (e) { say(e.code === 9 ? "The TV is switching off" : e.message); }
+}
+$("appsBox").open = localStorage.getItem("tvremote.appsOpen") !== "0";
+$("appsBox").addEventListener("toggle", () => localStorage.setItem("tvremote.appsOpen", $("appsBox").open ? "1" : "0"));
 
 // ---- volume: shown while the TV is on and reports it (UPnP) ----
 let volTouched = 0, volWanted = null, volBusy = false, volTimer = null;

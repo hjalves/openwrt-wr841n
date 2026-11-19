@@ -8,7 +8,7 @@ CC = $(TOOLCHAIN)/bin/mips-openwrt-linux-uclibc-gcc
 CFLAGS = -std=gnu99 -Os -Wall -Wextra -Wpedantic -mips32r2 -mtune=24kc -msoft-float
 CPPFLAGS = -isystem "$(TARGET)/usr/include"
 LDFLAGS = -L"$(TARGET)/usr/lib" -Wl,-rpath-link,"$(TARGET)/usr/lib" -s -Wl,-z,noexecstack
-LDLIBS = -lubus -lubox
+LDLIBS = -lubus -lubox -lblobmsg_json
 
 .PHONY: all clean
 

@@ -19,6 +19,11 @@
  * probes the TV every so often (default 30 s), so switching it on with its
  * own remote is noticed too.
  *
+ * Apps: the TV's installed-app list (ed.installedApp.get) is fetched over the
+ * same WebSocket each time it connects, and apps are launched there too
+ * (ed.apps.launch). Launching an app while the TV is off switches it on
+ * first.
+ *
  * Volume: the TV's UPnP RenderingControl service (SOAP over HTTP, port 9197)
  * reports the volume and mute state and sets an exact volume. It's read
  * only while someone is asking (status calls) or right after volume keys.
@@ -48,10 +53,12 @@
 
 #include <libubus.h>
 #include <libubox/blobmsg.h>
+#include <libubox/blobmsg_json.h>
 #include <libubox/usock.h>
 #include <libubox/utils.h>
 
-#define RX_CAP            8192   /* TV messages are a few hundred bytes */
+#define RX_CAP            32768  /* most TV messages are a few hundred bytes;
+                                    the app list about 4 KB for 16 apps */
 #define TX_CAP            512
 #define CONNECT_TIMEOUT   4000   /* ms: TCP connect + HTTP upgrade */
 #define CHANNEL_TIMEOUT   30000  /* ms: upgraded, waiting for ms.channel.connect
@@ -60,6 +67,8 @@
 #define RETRY_MS          1000   /* reconnect delay after a drop while on */
 #define QUEUE_MAX         8      /* keys pressed while the TV wakes up */
 #define KEY_MAX           40
+#define APPS_MAX          48
+#define APP_ID_MAX        63
 #define UPNP_PATH         "/upnp/control/RenderingControl1"
 #define UPNP_SERVICE      "urn:schemas-upnp-org:service:RenderingControl:1"
 #define UPNP_TIMEOUT      3000   /* ms per request */
@@ -104,6 +113,19 @@ static char last_error[160];
 static time_t last_error_time;
 static unsigned keys_sent, wol_sent;
 
+/* ---- apps ---- */
+struct app {
+	char id[APP_ID_MAX + 1];
+	char name[96];
+	int type;               /* 2 = web app (DEEP_LINK), 4 = native (NATIVE_LAUNCH) */
+};
+static struct app apps[APPS_MAX];
+static unsigned napps;
+static time_t apps_time;
+static bool apps_asked;                 /* asked on this connection */
+static char pending_app[APP_ID_MAX + 1]; /* launch waiting for the TV */
+static unsigned launches;
+
 /* ---- volume (UPnP) ---- */
 static int vol = -1, muted = -1;        /* -1 = unknown */
 static time_t vol_time, vol_retry_after;
@@ -137,6 +159,8 @@ static void set_state(enum tv_state s)
 	syslog(LOG_INFO, "TV %s -> %s", state_names[state], state_names[s]);
 	state = s;
 	state_since = time(NULL);
+	if (s == S_OFF || s == S_TURNING_OFF)
+		pending_app[0] = 0;
 	if (s != S_ON) {  /* the volume is only known, and only asked, while on */
 		upnp_cancel();
 		vol = muted = vol_set = -1;
@@ -196,6 +220,7 @@ static void conn_close(const char *why)
 	sock.fd = -1;
 	phase = C_IDLE;
 	rx_len = 0;
+	apps_asked = false;
 
 	switch (state) {
 	case S_ON:
@@ -310,6 +335,110 @@ static bool json_event(const char *s, char *out, size_t size)
 	return true;
 }
 
+static struct blob_attr *table_get(struct blob_attr *tbl, const char *name)
+{
+	struct blob_attr *cur;
+	int rem;
+
+	if (!tbl || blobmsg_type(tbl) != BLOBMSG_TYPE_TABLE)
+		return NULL;
+	blobmsg_for_each_attr(cur, tbl, rem)
+		if (!strcmp(blobmsg_name(cur), name))
+			return cur;
+	return NULL;
+}
+
+static int attr_int(struct blob_attr *a)
+{
+	if (!a)
+		return 0;
+	switch (blobmsg_type(a)) {
+	case BLOBMSG_TYPE_INT32: return (int32_t)blobmsg_get_u32(a);
+	case BLOBMSG_TYPE_INT64: return (int)blobmsg_get_u64(a);
+	case BLOBMSG_TYPE_STRING: return atoi(blobmsg_get_string(a));
+	default: return 0;
+	}
+}
+
+/* An app ID goes into JSON unescaped, so only these characters. */
+static bool valid_app_id(const char *id)
+{
+	size_t n = strlen(id), i;
+
+	if (!n || n > APP_ID_MAX)
+		return false;
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)id[i]) && id[i] != '.' && id[i] != '_' && id[i] != '-')
+			return false;
+	return true;
+}
+
+/* {"event":"ed.installedApp.get","data":{"data":[{"appId":..,"name":..,"app_type":2,..},..]}} */
+static void parse_apps(const char *json)
+{
+	static struct blob_buf jb;
+	struct blob_attr *cur, *data = NULL, *list, *a;
+	unsigned n = 0;
+	int rem;
+
+	blob_buf_init(&jb, 0);
+	if (!blobmsg_add_json_from_string(&jb, json)) {
+		set_error("couldn't parse the TV's app list");
+		return;
+	}
+	blob_for_each_attr(cur, jb.head, rem)
+		if (!strcmp(blobmsg_name(cur), "data"))
+			data = cur;
+	list = table_get(data, "data");
+	if (!list || blobmsg_type(list) != BLOBMSG_TYPE_ARRAY) {
+		set_error("unexpected app list from the TV");
+		return;
+	}
+	blobmsg_for_each_attr(a, list, rem) {
+		struct blob_attr *id = table_get(a, "appId"), *name = table_get(a, "name");
+
+		if (n == APPS_MAX)
+			break;
+		if (!id || blobmsg_type(id) != BLOBMSG_TYPE_STRING || !valid_app_id(blobmsg_get_string(id)))
+			continue;
+		snprintf(apps[n].id, sizeof(apps[n].id), "%s", blobmsg_get_string(id));
+		snprintf(apps[n].name, sizeof(apps[n].name), "%s",
+		         name && blobmsg_type(name) == BLOBMSG_TYPE_STRING ? blobmsg_get_string(name) : apps[n].id);
+		apps[n].type = attr_int(table_get(a, "app_type"));
+		n++;
+	}
+	napps = n;
+	apps_time = time(NULL);
+}
+
+static void request_apps(void)
+{
+	static const char msg[] =
+		"{\"method\":\"ms.channel.emit\",\"params\":{\"event\":\"ed.installedApp.get\",\"to\":\"host\"}}";
+
+	if (phase == C_READY && !apps_asked && ws_send(0x1, msg, sizeof(msg) - 1))
+		apps_asked = true;
+}
+
+static bool launch_now(const char *id)
+{
+	char msg[256];
+	const char *action = "DEEP_LINK";
+	unsigned i;
+	int n;
+
+	for (i = 0; i < napps; i++)
+		if (!strcmp(apps[i].id, id) && apps[i].type == 4)
+			action = "NATIVE_LAUNCH";
+	n = snprintf(msg, sizeof(msg),
+		"{\"method\":\"ms.channel.emit\",\"params\":{\"event\":\"ed.apps.launch\",\"to\":\"host\","
+		"\"data\":{\"appId\":\"%s\",\"action_type\":\"%s\"}}}", id, action);
+	if (n < 0 || n >= (int)sizeof(msg) || !ws_send(0x1, msg, n))
+		return false;
+	launches++;
+	return true;
+}
+
 static void on_text(char *s)
 {
 	char ev[64];
@@ -319,6 +448,11 @@ static void on_text(char *s)
 	if (!strcmp(ev, "ms.channel.connect")) {
 		if (phase == C_UPGRADED)
 			conn_ready();
+	} else if (!strcmp(ev, "ed.installedApp.get")) {
+		parse_apps(s);
+	} else if (!strcmp(ev, "ed.apps.launch")) {
+		if (strstr(s, "\"data\":false"))  /* the TV acknowledges with true */
+			set_error("the TV didn't launch the app");
 	} else if (!strcmp(ev, "ms.channel.unauthorized") || !strcmp(ev, "ms.channel.timeOut")) {
 		set_error("TV refused the remote (%s): allow \"%s\" on the TV", ev, cfg_name);
 		conn_close(NULL);
@@ -527,6 +661,11 @@ static void conn_ready(void)
 		send_key(queue[i], sp + 1);
 	}
 	nqueued = 0;
+	if (pending_app[0] && phase == C_READY) {
+		launch_now(pending_app);
+		pending_app[0] = 0;
+	}
+	request_apps();  /* refresh the list each time the TV comes up */
 }
 
 /* ------------------------------------------------------------------ */
@@ -858,6 +997,9 @@ static int m_status(struct ubus_context *ctx, struct ubus_object *obj,
 		blobmsg_add_u8(&b, "mute", muted);
 	blobmsg_add_u32(&b, "keys_sent", keys_sent);
 	blobmsg_add_u32(&b, "wol_sent", wol_sent);
+	blobmsg_add_u32(&b, "launches", launches);
+	if (pending_app[0])
+		blobmsg_add_string(&b, "then_launch", pending_app);
 	if (last_error[0]) {
 		blobmsg_add_string(&b, "last_error", last_error);
 		blobmsg_add_u32(&b, "last_error_age", (uint32_t)(now - last_error_time));
@@ -1002,12 +1144,77 @@ static int m_set_volume(struct ubus_context *ctx, struct ubus_object *obj,
 	return 0;
 }
 
+static int m_apps(struct ubus_context *ctx, struct ubus_object *obj,
+                  struct ubus_request_data *req, const char *method, struct blob_attr *msg)
+{
+	void *arr, *t;
+	unsigned i;
+
+	(void)obj; (void)method; (void)msg;
+	if (!napps)
+		request_apps();  /* not known yet: ask now, if the TV is on */
+	blob_buf_init(&b, 0);
+	arr = blobmsg_open_array(&b, "apps");
+	for (i = 0; i < napps; i++) {
+		t = blobmsg_open_table(&b, NULL);
+		blobmsg_add_string(&b, "id", apps[i].id);
+		blobmsg_add_string(&b, "name", apps[i].name);
+		blobmsg_add_u32(&b, "type", apps[i].type);
+		blobmsg_close_table(&b, t);
+	}
+	blobmsg_close_array(&b, arr);
+	if (apps_time)
+		blobmsg_add_u32(&b, "age", (uint32_t)(time(NULL) - apps_time));
+	return ubus_send_reply(ctx, req, b.head);
+}
+
+enum { L_APP, __L_MAX };
+static const struct blobmsg_policy launch_policy[__L_MAX] = {
+	[L_APP] = { .name = "app", .type = BLOBMSG_TYPE_STRING },
+};
+
+static int m_launch(struct ubus_context *ctx, struct ubus_object *obj,
+                    struct ubus_request_data *req, const char *method, struct blob_attr *msg)
+{
+	struct blob_attr *tb[__L_MAX];
+	const char *id;
+
+	(void)obj; (void)method;
+	blobmsg_parse(launch_policy, __L_MAX, tb, blob_data(msg), blob_len(msg));
+	if (!tb[L_APP] || !valid_app_id(id = blobmsg_get_string(tb[L_APP])))
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	switch (state) {
+	case S_ON:
+		if (phase == C_READY) {
+			if (!launch_now(id))
+				return UBUS_STATUS_UNKNOWN_ERROR;
+			reply_state(ctx, req, "sent");
+			return 0;
+		}
+		break;  /* reconnecting: queue */
+	case S_OFF:  /* "open Netflix" on a TV that's off: switch it on first */
+		if (!power_on_now())
+			return UBUS_STATUS_UNKNOWN_ERROR;
+		break;
+	case S_WAKING:
+		break;
+	case S_TURNING_OFF:
+		return UBUS_STATUS_NO_DATA;
+	}
+	pending_off = false;
+	snprintf(pending_app, sizeof(pending_app), "%s", id);
+	reply_state(ctx, req, "queued");
+	return 0;
+}
+
 static const struct ubus_method methods[] = {
 	UBUS_METHOD_NOARG("status", m_status),
 	UBUS_METHOD_NOARG("power_on", m_power_on),
 	UBUS_METHOD_NOARG("power_off", m_power_off),
 	UBUS_METHOD("key", m_key, key_policy),
 	UBUS_METHOD("set_volume", m_set_volume, vol_policy),
+	UBUS_METHOD_NOARG("apps", m_apps),
+	UBUS_METHOD("launch", m_launch, launch_policy),
 };
 
 static struct ubus_object_type obj_type = UBUS_OBJECT_TYPE("tv", methods);

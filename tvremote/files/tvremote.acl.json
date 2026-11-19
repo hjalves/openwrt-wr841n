@@ -3,7 +3,7 @@
 		"description": "Anonymous TV remote control. rpcd only grants the anonymous session the \"read\" part of an ACL, so the control methods are listed there; the TV itself accepts any client on the LAN without a token anyway.",
 		"read": {
 			"ubus": {
-				"tv": [ "status", "power_on", "power_off", "key", "set_volume" ]
+				"tv": [ "status", "power_on", "power_off", "key", "set_volume", "apps", "launch" ]
 			}
 		}
 	}
