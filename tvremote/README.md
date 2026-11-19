@@ -12,10 +12,10 @@ Switches the Samsung TV on and off and sends it remote-control keys, from the ro
 
 ## The TV
 
-A Samsung **UE32K5500** (2016, Tizen 2.4, `16_HAWKM_FHD`, `msfVersion` 2.1.0), wired, at `192.168.0.212`, MAC `f8:3f:51:76:91:85`. Its address must not change: keep a fixed DHCP lease for it on the Huawei.
+A Samsung **UE32K5500** (2016, Tizen 2.4, `16_HAWKM_FHD`, `msfVersion` 2.1.0), wired, at `192.168.0.20`, MAC `f8:3f:51:76:91:85`. That address is set statically on the TV (Settings → General → Network → Network Status → IP Settings), outside the Huawei's DHCP pool (.200–.250): the Huawei can't reserve addresses, and the daemon doesn't look for the TV. (It was `192.168.0.212` by DHCP until 2026-11-19.)
 
 - **Power on: Wake-on-LAN.** A magic packet (6 × `0xff`, then the MAC 16 times) as a UDP broadcast to `192.168.0.255`, port 9. It crosses the powerline link to the TV. The TV answers on port 8001 about 3–15 s later: quicker if it went to standby only recently.
-- **Keys and power off: the remote-control WebSocket**, `ws://192.168.0.212:8001/api/v2/channels/samsung.remote.control?name=<base64 name>`. This model accepts plain `ws://` on port 8001 with **no token and no "Allow" prompt**. Port 8002 (`wss://`, token) is open too, but not needed. Each key is one JSON text frame:
+- **Keys and power off: the remote-control WebSocket**, `ws://192.168.0.20:8001/api/v2/channels/samsung.remote.control?name=<base64 name>`. This model accepts plain `ws://` on port 8001 with **no token and no "Allow" prompt**. Port 8002 (`wss://`, token) is open too, but not needed. Each key is one JSON text frame:
 
   ```json
   {"method":"ms.remote.control","params":{"Cmd":"Click","DataOfCmd":"KEY_VOLUP","Option":"false","TypeOfRemote":"SendRemoteKey"}}
@@ -23,7 +23,7 @@ A Samsung **UE32K5500** (2016, Tizen 2.4, `16_HAWKM_FHD`, `msfVersion` 2.1.0), w
 
 - **After `KEY_POWER`** the TV stays on the network for about 17 s. A second `KEY_POWER` in that window could switch it back on.
 
-Read-only TV information: `http://192.168.0.212:8001/api/v2/`.
+Read-only TV information: `http://192.168.0.20:8001/api/v2/`.
 
 ## How the daemon works
 
