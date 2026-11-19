@@ -97,7 +97,7 @@ dialog p{margin:0 0 10px}
     <div class="row" style="grid-template-columns:1fr;margin-top:12px"><label for="pw" class="sr">Password</label>
       <input type="password" id="pw" autocomplete="current-password" placeholder="Password" required></div>
     <p class="err" id="loginErr" hidden></p>
-    <div class="btns"><button class="primary" id="loginBtn">Log in</button></div>
+    <div class="btns"><button class="primary" id="loginBtn">Log in</button><button type="button" id="loginCancel">Cancel</button></div>
   </form>
 </dialog>
 <dialog id="dlg"></dialog>
@@ -190,7 +190,10 @@ function relogin(why) {
     const d = $("login");
     $("loginWhy").textContent = why || (sid ? "Your session has expired. Log in again to continue." : "Use the router's root password.");
     $("loginErr").hidden = true; $("pw").value = "";
-    d.oncancel = e => e.preventDefault();
+    // Without a session this page has nothing to show: Cancel (or Esc) goes back to the router's home page.
+    const leave = () => { location.href = "/"; };
+    d.oncancel = e => { e.preventDefault(); leave(); };
+    $("loginCancel").onclick = leave;
     $("loginForm").onsubmit = async e => {
       e.preventDefault();
       const b = $("loginBtn");

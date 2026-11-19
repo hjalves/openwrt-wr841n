@@ -65,7 +65,7 @@ The router's current `WET0WEST,M3.5.0/1,M10.5.0` (Lisbon) is reproduced exactly.
 
 ## Security
 
-- **Login:** rpcd's own login (`session login`) with the root password, the same check LuCI uses. Sessions expire after 30 minutes idle. When that happens, the page asks for the password again, then carries on with what you were doing.
+- **Login:** rpcd's own login (`session login`) with the root password, the same check LuCI uses. Sessions expire after 30 minutes idle. When that happens, the page asks for the password again, then carries on with what you were doing. The login dialog's **Cancel** button (or Esc) goes back to the router's home page, since the admin page has nothing to show without a session.
 - **What a session can do:** the ACL gives the logged-in root session every ubus object, every uci config and uploads. It's granted through the `'*'` read/write lists of the `root` login in `/etc/config/rpcd`. **Anonymous users get nothing new:** the anonymous ACLs of huawei-trafficd and lanwatch are unchanged.
 - **Plain HTTP, as with LuCI here:** the password and session ID cross the LAN unencrypted (uhttpd has no TLS module installed).
 - **Cross-site requests:** the session ID travels in the request body, not a cookie, so another website can't make requests in your name.
@@ -97,7 +97,7 @@ Restarting rpcd logs out open LuCI sessions.
 
 Run against the real router, in headless Chromium (desktop, and a phone in dark mode). There were no script errors, and nothing overflowed on the phone.
 
-- **Login:** a wrong password is refused. An expired session (destroyed on the router mid-use) brings up the login, then the interrupted action finishes.
+- **Login:** a wrong password is refused. Cancel and Esc on the login dialog lead back to the home page (checked 2026-11-19 in headless Chromium, no script errors). An expired session (destroyed on the router mid-use) brings up the login, then the interrupted action finishes.
 - **All five tabs load with real data.** The Wi-Fi clients are named from lanwatch.
 - **`admin-apply` on the router, through ubus, on a throwaway config:**
   - **Values:** spaces and quotes in values are kept, and list changes work.
