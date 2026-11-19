@@ -13,6 +13,7 @@ Custom firmware, software and notes for a TP-Link TL-WR841N v9 running OpenWrt 1
 | [`rtty/`](rtty/README.md) | rtty remote-terminal client built for the router (no TLS, 35 KiB on flash), kept for later; not installed |
 | [`lanwatch/`](lanwatch/README.md) | Lists the devices on the LAN (names, makers, first/last seen, new devices highlighted): `devices.html` |
 | [`weatherd/`](weatherd/README.md) | Receives the weather station's uploads on the LAN (no internet needed) and keeps their history: `weather.html` |
+| [`tvremote/`](tvremote/README.md) | Samsung TV remote control: power on by Wake-on-LAN, keys and power off over the TV's WebSocket; `remote.html` |
 | [`tinymdns/`](tinymdns/README.md) | Minimal mDNS / DNS-SD advertiser (17 KiB): makes the router `openwrt.local` and advertises its web interface |
 | [`router-ssh/`](router-ssh/README.md) | `connect`, `copy` and `tunnel` helpers for the router's old Dropbear SSH server |
 | [`docs/`](docs/) | Inventories and audits of the router, taken 2026-11-14 (see below) |
@@ -24,6 +25,7 @@ On the router:
 - `http://192.168.0.254/traffic.html`: LTE usage, signal and connection dashboard
 - `http://192.168.0.254/devices.html`: devices on the network
 - `http://192.168.0.254/weather.html`: weather station
+- `http://192.168.0.254/remote.html`: TV remote
 - `http://192.168.0.254/admin.html`: router admin (login required)
 
 ### `docs/`

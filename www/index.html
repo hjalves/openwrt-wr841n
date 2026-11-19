@@ -54,6 +54,11 @@ a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <p>Temperature, humidity, pressure, wind, rain and sun from the weather station.</p>
       <div class="live" id="liveWx"></div>
     </a>
+    <a class="card" href="/remote.html">
+      <h2>TV remote</h2>
+      <p>Switch the Samsung TV on and off and use it like its remote.</p>
+      <div class="live" id="liveTv"></div>
+    </a>
   </nav>
   <p class="foot" id="luci" hidden>Classic admin interface: <a href="/cgi-bin/luci">LuCI</a> (firewall and everything else)</p>
 </main>
@@ -115,6 +120,18 @@ fetch("/cgi-bin/luci", {method: "HEAD", cache: "no-store"}).then(r => { if (r.st
     if (s.press != null) parts.push(`${f(s.press / 10, 0)} hPa`);
     if (s.wind != null) parts.push(`wind ${f(s.wind * 0.36, 0)} km/h`);
     document.getElementById("liveWx").textContent = parts.join(" · ");
+  } catch (e) { /* summary is optional */ }
+})();
+// TV power state, from tvremote; stays empty if it isn't running.
+(async () => {
+  try {
+    const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: 4, method: "call",
+        params: ["00000000000000000000000000000000", "tv", "status", {}]})});
+    const j = await r.json();
+    if (!j.result || j.result[0] !== 0) return;
+    const st = {off: "off", waking: "switching on", on: "on", turning_off: "switching off"}[j.result[1].state];
+    if (st) document.getElementById("liveTv").textContent = `TV is ${st}`;
   } catch (e) { /* summary is optional */ }
 })();
 </script>

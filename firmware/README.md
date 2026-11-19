@@ -24,6 +24,7 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
 - **Our programs**, with their configs, ACLs and pages:
   - [huawei-trafficd](../huawei-trafficd/README.md), [lanwatch](../lanwatch/README.md) and [tinymdns](../tinymdns/README.md), enabled at boot through `/etc/rc.d` links in the image;
   - [weatherd](../weatherd/README.md) and its page, from the next build on (added 2026-11-17; the router currently runs it from the writable area);
+  - [tvremote](../tvremote/README.md) and its page, from the next build on (added 2026-11-19; the router currently runs it from the writable area);
   - the [landing page](../www/README.md), `routerinfo`, the icons;
   - the admin page and `admin-apply`.
 - **`/etc/uci-defaults/99-openwrt-wr841n`:** runs once at first boot. There's no IPv6 any more, so it:

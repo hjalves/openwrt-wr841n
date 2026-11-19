@@ -1,0 +1,113 @@
+# tvremote: Samsung TV remote control
+
+Switches the Samsung TV on and off and sends it remote-control keys, from the router. The page is **http://192.168.0.254/remote.html** (also linked from the landing page); the daemon is on ubus as `tv`.
+
+| | |
+|---|---|
+| Daemon | `tvremote`, 19 KiB stripped |
+| Links to | only libraries already on the router: `libubus`, `libubox`, uClibc (no TLS needed) |
+| Page | `/www/remote.html`, about 13 KB |
+| RAM | about 1 MiB RSS, nearly all shared libraries |
+| Installed | 2026-11-19 in the writable area, enabled at boot (`/etc/init.d/tvremote`); in `firmware/build.sh` from the next build on |
+
+## The TV
+
+A Samsung **UE32K5500** (2016, Tizen 2.4, `16_HAWKM_FHD`, `msfVersion` 2.1.0), wired, at `192.168.0.212`, MAC `f8:3f:51:76:91:85`. Its address must not change: keep a fixed DHCP lease for it on the Huawei.
+
+- **Power on: Wake-on-LAN.** A magic packet (6 × `0xff`, then the MAC 16 times) as a UDP broadcast to `192.168.0.255`, port 9. It crosses the powerline link to the TV. The TV answers on port 8001 about 3–15 s later: quicker if it went to standby only recently.
+- **Keys and power off: the remote-control WebSocket**, `ws://192.168.0.212:8001/api/v2/channels/samsung.remote.control?name=<base64 name>`. This model accepts plain `ws://` on port 8001 with **no token and no "Allow" prompt**. Port 8002 (`wss://`, token) is open too, but not needed. Each key is one JSON text frame:
+
+  ```json
+  {"method":"ms.remote.control","params":{"Cmd":"Click","DataOfCmd":"KEY_VOLUP","Option":"false","TypeOfRemote":"SendRemoteKey"}}
+  ```
+
+- **After `KEY_POWER`** the TV stays on the network for about 17 s. A second `KEY_POWER` in that window could switch it back on.
+
+Read-only TV information: `http://192.168.0.212:8001/api/v2/`.
+
+## How the daemon works
+
+It keeps the WebSocket open while the TV is on, so keys go out with no reconnect delay, and tracks the TV's power state:
+
+```
+off ──power_on (WoL)──▶ waking ──channel open──▶ on ──power_off (KEY_POWER)──▶ turning_off ──25 s──▶ off
+```
+
+- **off:** probes port 8001 every `poll` seconds (default 30), so switching the TV on with its own remote is noticed. A probe of a sleeping TV is one unanswered TCP SYN.
+- **waking:** WoL sent; probes every 2 s, gives up after `wake_timeout` (40 s).
+- **on:** connection open. TCP keepalive (10 s idle, then 3 probes 5 s apart) notices a TV that vanished. If the connection drops after it has worked for 10 s or more, the daemon reconnects at once; if that fails, the TV is off.
+- **turning_off:** `KEY_POWER` sent. For `off_window` seconds (25) nothing is sent and the TV isn't probed. The socket is left open until then: closing it straight after the key can send a TCP reset, and the TV then drops the key it hasn't read yet. (That happened in testing.)
+
+Requests during a transition aren't lost:
+- **Keys while waking** (up to 8) are queued and sent once the channel is open.
+- **Power on while switching off** sends the WoL when the window ends.
+- **Power off while waking** sends `KEY_POWER` once the TV is up.
+- **`KEY_POWER` via `key`** goes through the same power logic.
+
+If the TV ever sends `ms.channel.unauthorized` (a firmware that wants approval), the daemon logs it and `status` shows it in `last_error`. Allow "OpenWrt" on the TV under Settings → General → External Device Manager → Device Connection Manager.
+
+## ubus `tv`
+
+| Method | Arguments | Result |
+|---|---|---|
+| `status` | – | `state` (`off`, `waking`, `on`, `turning_off`), `since` (seconds in that state), `connected`, `then` (an `on`/`off` waiting for the current transition), `host`, `mac`, `name`, `keys_sent`, `wol_sent`, `last_error` and `last_error_age` |
+| `power_on` | – | `state`, `then` |
+| `power_off` | – | `state`, `then` |
+| `key` | `key`: `KEY_` followed by A–Z, 0–9 or `_`; `cmd`: `Click` (default), `Press` or `Release` | `state` and `sent: true`, or `queued: true` while the TV wakes |
+
+Errors: `key` returns status 9 (no data) while the TV is off or switching off, 2 (invalid argument) for a malformed key. Any `KEY_` name is passed through as-is; which ones the TV knows is up to the TV.
+
+```sh
+ubus call tv power_on
+ubus call tv key '{"key":"KEY_VOLUP"}'
+ubus call tv power_off
+```
+
+**Access:** all four methods are open to the anonymous session (`files/tvremote.acl.json`), like the dashboards. A login wouldn't protect anything: the TV itself accepts remote-control connections from any LAN client without a token. rpcd only grants the anonymous session the `read` part of an ACL, so the control methods are listed under `read`. After installing or changing an ACL, `/etc/init.d/rpcd restart` (a `reload` doesn't rebuild the anonymous session; a restart logs out the admin page).
+
+## The page
+
+`remote.html` is made for a phone, in light and dark themes:
+- **Power:** one button. It shows "Turn on" or "Turn off" for the current state, and the header shows the TV's state (polled every 4 s, every 1 s during transitions).
+- **Keys:** Source and Menu; the arrows and OK; Back, Home and Exit; volume, mute, Info and channel.
+- **Folded away:** playback keys and Guide, and the number keys.
+- **Holding a key:** the arrows, volume and channel keys repeat while held.
+- **Keyboard:** arrows, Enter, Backspace (back), Esc (exit), H (home), + and − (volume), M (mute), and the digits.
+
+## Configuration (`/etc/config/tvremote`)
+
+| Option | Default | |
+|---|---|---|
+| `host` | – (required) | The TV's IPv4 address |
+| `mac` | – (required) | The TV's MAC, for Wake-on-LAN |
+| `broadcast` | `255.255.255.255` | WoL destination; set to `192.168.0.255` |
+| `port` | `8001` | The TV's remote-control port |
+| `name` | `OpenWrt` | Name this remote gives the TV |
+| `poll` | `30` | Seconds between probes while off; 0 = only when asked to switch on |
+| `wake_timeout` | `40` | Give up waking after this |
+| `off_window` | `25` | The TV's shutdown window after `KEY_POWER` |
+
+## Building and installing
+
+```sh
+QEMU_LD_PREFIX=/opt/x86_64-root make -C tvremote      # on the ARM VM; see the top-level README
+./router-ssh/copy tvremote/tvremote router:/usr/sbin/tvremote
+./router-ssh/copy tvremote/files/tvremote.init router:/etc/init.d/tvremote
+./router-ssh/copy tvremote/files/tvremote.config router:/etc/config/tvremote
+./router-ssh/copy tvremote/files/tvremote.acl.json router:/usr/share/rpcd/acl.d/tvremote.json
+./router-ssh/copy tvremote/www/remote.html router:/www/remote.html
+./router-ssh/connect 'chmod 755 /usr/sbin/tvremote /etc/init.d/tvremote; /etc/init.d/tvremote enable; /etc/init.d/tvremote start; /etc/init.d/rpcd restart'
+```
+
+## Tested (2026-11-19)
+
+- **Power on:** WoL from the router woke the TV; keys pressed while it woke were queued and then sent.
+- **Keys:** volume, mute and others, both through ubus and by tapping the page in a headless phone browser.
+- **Power off:** the TV really went off. Ping and port 8001 were gone after the window.
+- **Power on during the shutdown window:** the WoL was held until the window ended, then the TV woke.
+- **Anonymous access:** HTTP calls to `/ubus` work with the ACL.
+
+**Not tested yet:**
+- **Waking after many hours in standby.** If WoL stops working then, enable the TV's option to be switched on from a phone or over the network.
+- **Switching off with the TV's own remote.** It should be noticed within about 25–45 s (keepalive, then a reconnect attempt).
+- **Very long idle connections.** One stayed open for several minutes without trouble.
