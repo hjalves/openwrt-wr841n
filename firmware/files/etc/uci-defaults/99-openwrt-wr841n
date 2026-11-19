@@ -7,4 +7,37 @@ for o in listen_http listen_https; do
 	for v in '[::]:80' '[::]:443'; do uci -q del_list uhttpd.main.$o="$v"; done
 done
 uci commit uhttpd
+
+# The WAN port is a fifth LAN port (since 2026-11-19): the powerline to the Huawei is
+# plugged into it, and the Huawei does the routing. Bridge the wan interface's port into
+# lan, then drop wan/wan6, routes over them and everything in the firewall about wan.
+# Nothing to do where that's already done (no wan interface).
+wanif=$(uci -q get network.wan.ifname)
+if [ -n "$wanif" ] && uci -q get network.lan >/dev/null; then
+	lanif=$(uci -q get network.lan.ifname)
+	case " $lanif " in *" $wanif "*) ;; *) uci set network.lan.ifname="${lanif:+$lanif }$wanif" ;; esac
+	uci -q delete network.wan
+	uci -q delete network.wan6
+	for s in $(uci -X show network | grep -E "\.interface='wan6?'$" | cut -d. -f2 | sort -u); do
+		uci delete network.$s
+	done
+	uci commit network
+	for s in $(uci -X show firewall | grep -E "\.(src|dest)='wan'$|\.name='wan'$" | cut -d. -f2 | sort -u); do
+		uci delete firewall.$s
+	done
+	uci commit firewall
+fi
+
+# After a factory reset, lan has OpenWrt's default address, 192.168.1.1, which nothing on
+# this network uses (and this image has no DHCP server to hand out 192.168.1.x). Put the
+# router back where it lives: 192.168.0.254 on the Huawei's network, with the Huawei as
+# gateway. Only when lan still has that default, so kept settings are never overridden.
+if [ "$(uci -q get network.lan.ipaddr)" = "192.168.1.1" ]; then
+	uci set network.lan.proto='static'
+	uci set network.lan.ipaddr='192.168.0.254'
+	uci set network.lan.netmask='255.255.255.0'
+	uci set network.lan.gateway='192.168.0.1'
+	uci set network.lan.dns='1.1.1.1 1.0.0.1'
+	uci commit network
+fi
 exit 0

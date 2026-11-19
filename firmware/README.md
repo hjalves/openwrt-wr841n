@@ -31,6 +31,15 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
   - sets the firewall's `disable_ipv6`;
   - removes uhttpd's `[::]` listeners.
 
+  Since 2026-11-19 it also makes the **WAN port a fifth LAN port**, as the router has been set up by hand since that day: the powerline to the Huawei is plugged into it. If the config still has a `wan` interface, the script:
+  - adds its port (`eth1`) to the `lan` bridge;
+  - deletes `wan`, `wan6` and routes over them;
+  - deletes everything in the firewall about `wan`: the zone, forwarding, rules and port forwards.
+
+  Without this, a factory reset or a flash without kept settings would cut the powerline (and so the Huawei and the internet) off from the router's LAN side. Where there's no `wan` interface it changes nothing.
+
+  It also **restores the router's address** after a factory reset. If `lan` still has OpenWrt's default `192.168.1.1`, it sets `192.168.0.254/24`, gateway `192.168.0.1` (the Huawei) and DNS `1.1.1.1 1.0.0.1`. That default address is unreachable here, and this image has no DHCP server. Any other address, such as one kept from earlier settings, is left alone. Not restored: the Wi-Fi (OpenWrt's default is off) and the root password, which are secrets and don't belong in the image.
+
   It works whether the settings were kept from the old firmware or are fresh defaults.
 - **`/lib/upgrade/keep.d/openwrt-wr841n`:** future firmware upgrades with "keep settings" also keep `/srv/huawei-trafficd/`, `/srv/lanwatch/` and `/srv/weatherd/` (traffic history, device list, weather history).
 
@@ -60,6 +69,13 @@ The daemons are taken from the committed binaries. They are byte-identical to th
 - **File system format:** squashfs 4.0, xz, 256 KiB blocks, with exactly the same xz dictionary and filter options as the official image. The Image Builder's original x86 `unsquashfs` unpacks it into the same files as the native one.
 - **Contents:** compared with the official image, package by package and file by file. The only differences are the ones listed above. No `lua`, LuCI, `dnsmasq`, `pppd`, or IPv6/PPP kernel modules remain.
 - **First-boot script:** run on the router itself, with its own `uci`, on copies of the configs in `/tmp`. It was checked both with the router's current configs (as a "keep settings" upgrade leaves them) and with the image's defaults (as after a factory reset). Both ended with no `[::]` listeners and `disable_ipv6 '1'`, and the real configs were untouched.
+
+- **First-boot script, WAN-port part (2026-11-19):** run the same way on copies of three configs:
+  - the router's current ones (already bridged by hand): nothing changed;
+  - the ones from before the manual change: `lan` became `eth0 eth1`, with no `wan` left in the network or firewall config;
+  - the image's factory firewall with that network config: the same result.
+
+  A second run changed nothing further, and the real configs were untouched. With the address step added, a factory-like config (`192.168.1.1`, no gateway or DNS) came out as `192.168.0.254` with gateway and DNS, and a kept custom address (`192.168.0.250`) was left alone.
 
 **Not checked, because it needs the real hardware:** booting the image. In particular:
 - whether the firewall (fw3) starts cleanly without IPv6 (it is told not to use it);
