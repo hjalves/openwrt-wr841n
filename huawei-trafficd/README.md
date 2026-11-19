@@ -318,6 +318,8 @@ The router reaches the Huawei over three HomePlug AV powerline adapters (probed 
 | `5c:e9:31:ba:49:6a` | at the Huawei; the network's **coordinator** | Broadcom |
 | `98:48:27:87:3f:68` | elsewhere | Qualcomm QCA7420 |
 
+Which adapter is where was first read from the Qualcomm adapter's network report, then **confirmed first-hand with `CM_BRG_INFO`** (message type `0x6020`), which both Broadcom adapters answer: each lists the device addresses on its Ethernet side. `…41:5f` lists this router (`30:b5:c2:80:f4:be`) among the devices behind it, and `…49:6a` the Huawei (`24:df:6a:13:ff:a5`). So `plc_down`, the coordinator's rate towards our station, really is the rate towards this router, the download direction.
+
 - **Request:** `CM_NW_STATS.REQ` (MMTYPE `0x6048`) with **MMV 2** (HomePlug AV 2.0), no payload, sent to the coordinator's MAC.
 - **Reply:** `CM_NW_STATS.CNF` (`0x6049`): a station count, then per station its MAC, its average TX rate and its average RX rate, as 16-bit little-endian Mbit/s. TX is the coordinator sending to that station (towards this router); RX is the reverse.
 - **Why MMV 2:** with MMV 1 the rates are single bytes and saturate at 255 (`ff ff`), far below this link's 550–630 Mbit/s.
