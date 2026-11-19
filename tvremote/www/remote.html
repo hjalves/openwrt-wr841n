@@ -46,6 +46,8 @@ details{margin-top:16px;border:1px solid var(--border);border-radius:12px;backgr
 summary{padding:10px 14px;cursor:pointer;color:var(--text-secondary);font-size:13px}
 details .pad{padding:0 10px 10px}
 .hint{color:var(--muted);font-size:12px;text-align:center;margin-top:16px}
+@media (max-width:560px){.viz-root{padding-top:12px;padding-bottom:12px}}
+@media (hover:none) and (pointer:coarse){.hint{display:none}}  /* keyboard hint: no use on a touch-only phone */
 .off .ctl{opacity:.45}
 .vol{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);padding:10px 14px 6px}
 .vol[hidden],.apps[hidden]{display:none}
