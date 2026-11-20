@@ -13,7 +13,7 @@ Receives the weather station's uploads on the router and keeps their history: th
 
 ## The station
 
-A Fine Offset **WS2900** console (EasyWeather 1.7.6, model `WS2900_V2.01.18`, at `192.168.0.200`) with its **customized upload** set to the Ecowitt protocol, server `192.168.0.254`, port `8080`, path `/`, every 60 s. It then posts a form about every 64 seconds:
+A Fine Offset **WS2900** console (EasyWeather 1.7.6, model `WS2900_V2.01.18`, MAC `98:cd:ac:22:63:32`, address by DHCP from the Huawei) with its **customized upload** set to the Ecowitt protocol, server `192.168.0.254`, port `8080`, path `/`, every 60 s. It then posts a form about every 64 seconds:
 - outdoor and indoor temperature and humidity;
 - relative and absolute pressure;
 - wind speed, gust and direction;
@@ -41,12 +41,12 @@ Values arrive in US units (°F, inHg, mph, in). weatherd stores them in metric:
 ## Which uploads are accepted
 
 - **Method:** only `POST` requests, at most 4 KB, completed within 5 seconds.
-- **Sender:** only from the configured station address (`station`), and only with its `PASSKEY` (`passkey`). Either check is skipped if left empty. Both are set in the default config. The passkey isn't secret: it's an ID derived from the station's MAC, and the station sends it in every upload.
+- **Sender:** only with the station's `PASSKEY` (`passkey`), and optionally only from one address (`station`). Either check is skipped if left empty. The default config checks only the passkey: the station gets its address by DHCP, and the Huawei can't reserve one. On 2026-11-20 a Huawei reboot moved the station from `.200` to `.201`, and the address check then rejected about 5 hours of uploads (280) until it was dropped. The passkey isn't secret: it's an ID derived from the station's MAC, and the station sends it in every upload.
 - **Values:** checked against physical ranges (−73 to 93 °C, 15 to 35 inHg, and so on). Anything out of range or not a number is treated as missing.
 - **Retries:** an upload within 10 s of the previous one is answered `200` but ignored.
 - **Without a clock:** uploads are answered `200` but not stored until the router's clock is set (NTP).
 
-This is plain HTTP on the LAN, as the station sends it: the address and passkey checks keep out mistakes and casual fakes, not a determined attacker on the LAN.
+This is plain HTTP on the LAN, as the station sends it: the passkey check keeps out mistakes and casual fakes, not a determined attacker on the LAN.
 
 ## Repeating uploads to other servers
 
@@ -160,7 +160,7 @@ Light and dark mode.
 | Option | Default | |
 |---|---|---|
 | `port` | `8080` | TCP port the station posts to |
-| `station` | `192.168.0.200` | accepted sender address; empty = any |
+| `station` | empty | accepted sender address; empty = any (the default: the station's address comes from DHCP and changes) |
 | `passkey` | the station's | required `PASSKEY`; empty = not checked. Not secret: an ID derived from the station's MAC |
 | `history` | `4320` | uploads kept in RAM |
 | `coarse_interval`, `coarse_history` | `3600`, `9600` | summary period (s) and how many are kept |
