@@ -14,6 +14,7 @@ Custom firmware, software and notes for a TP-Link TL-WR841N v9 running OpenWrt 1
 | [`lanwatch/`](lanwatch/README.md) | Lists the devices on the LAN (names, makers, first/last seen, new devices highlighted): `devices.html` |
 | [`weatherd/`](weatherd/README.md) | Receives the weather station's uploads on the LAN (no internet needed) and keeps their history: `weather.html` |
 | [`tvremote/`](tvremote/README.md) | Samsung TV remote control: power on by Wake-on-LAN, keys and power off over the TV's WebSocket; `remote.html` |
+| [`gemgate/`](gemgate/README.md) | Gemini-to-HTTP gateway (CGI, `/cgi-bin/gemini`), so devices that only speak HTTP, like the TV, can browse Gemini; TLS by BearSSL, trust on first use |
 | [`tinymdns/`](tinymdns/README.md) | Minimal mDNS / DNS-SD advertiser (17 KiB): makes the router `openwrt.local` and advertises its web interface |
 | [`router-ssh/`](router-ssh/README.md) | `connect`, `copy` and `tunnel` helpers for the router's old Dropbear SSH server |
 | [`docs/`](docs/) | Inventories and audits of the router, taken 2026-11-14 (see below) |

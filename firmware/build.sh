@@ -42,6 +42,7 @@ inst 644 www/favicon.svg /www/favicon.svg
 inst 644 www/favicon-32.png /www/favicon-32.png
 inst 644 www/apple-touch-icon.png /www/apple-touch-icon.png
 inst 755 www/cgi-bin/routerinfo /www/cgi-bin/routerinfo
+inst 755 gemgate/gemgate /www/cgi-bin/gemini
 inst 644 admin/www/admin.html /www/admin.html
 inst 755 admin/files/admin-apply /usr/libexec/admin-apply
 inst 644 admin/files/admin.acl.json /usr/share/rpcd/acl.d/admin.json
