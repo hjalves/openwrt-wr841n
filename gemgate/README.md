@@ -11,7 +11,21 @@ GET http://192.168.0.254/cgi-bin/gemini?url=<percent-encoded gemini:// URL>[&tru
 | Program | `gemgate`, 107 KB stripped, BearSSL linked statically; needs nothing beyond uClibc |
 | Speed | 0.5–1.3 s per page over the LTE link (TCP and TLS handshake included); certificates already known: about 0.5 s |
 | Flash | the program, plus `/srv/gemgate/known_hosts`, about 90 bytes per host |
-| Installed | 2026-11-21 in the writable area; in `firmware/build.sh` from the next build on |
+| Installed | 2026-11-21 in the writable area, with the test page `/gemini.html`; both in `firmware/build.sh` from the next build on |
+
+## Test page: `/gemini.html`
+
+**http://192.168.0.254/gemini.html** is a small Gemini browser using the gateway, for testing it from any browser on the LAN. It isn't linked from the landing page.
+- **Navigation:** an address bar (a bare host name like `geminiprotocol.net` works), Go, and Home (`gemini://gemini.hjalves.dev/`). The address is kept in the page's `#` part, so Back, Forward, reload and bookmarks work.
+- **Rendering:** gemtext with headings, links, lists, quotes and preformatted blocks. All remote text is inserted as text, never as HTML.
+  - **Gemini links** stay in the page; **http(s) links** open in a new tab; other schemes are shown but not followed.
+  - **Other text types** are shown as plain text, **images** inline; **other files** are offered for download.
+- **Statuses:**
+  - **10/11:** an input box (hidden for 11), sent as the URL's query.
+  - **3x:** followed automatically, at most 5 times, and noted in the status line.
+  - **4x–6x:** an error page with the server's message.
+- **Gateway errors:** explained. A changed certificate shows both fingerprints and a **Trust the new certificate** button, which repeats the request with `trust=`.
+- **Status line:** the Gemini status and meta, the time taken, and "certificate stored (first visit)" or "certificate replaced" when that happens.
 
 ## What it answers
 
@@ -94,4 +108,11 @@ QUERY_STRING='url=gemini%3A%2F%2Fgemini.hjalves.dev%2F' REQUEST_METHOD=GET /tmp/
   - **Certificate change:** after changing the stored fingerprint, the next request was refused with `cert-changed`; a wrong `trust=` was refused too; the right one replaced the entry; later requests were `known` again.
   - **Refused:** `http://` URLs, user info, `192.168.0.254`, `localhost`; an unknown host gave `dns`; POST gave `405`; OPTIONS gave `204`.
   - **Body:** the 30,459-byte Gemini specification was byte-identical to a direct fetch with `openssl s_client`.
+- **The test page, in headless Chromium against the router:**
+  - **Navigation:** your capsule as home, following a link, a redirect (`geminiprotocol.net/docs` → `/docs/`, noted), Back and Forward.
+  - **Search:** kennedy.gemi.dev's prompt, answered (36 results).
+  - **Errors:** a missing page (`51`), and an `http://` address refused.
+  - **Certificate change:** after altering the stored fingerprint on the router, the warning appeared with both fingerprints, and "Trust" restored the right one. The system log recorded it.
+  - **Display:** light, dark and phone layouts; no script errors.
+  - **Not tried yet:** images and downloads.
 - **On the router, through uhttpd, with `curl` from the LAN:** five public capsules loaded, at 0.6–1.3 s on first visit and about 0.5 s afterwards. The specification was again byte-identical.
