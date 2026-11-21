@@ -17,8 +17,9 @@ All three pages (this one, `traffic.html` and `devices.html`) use the same icon:
 |---|---|---|
 | `favicon.svg` | 335 B | Browser tabs in Chrome, Firefox and Edge (sharp at any size) |
 | `favicon-32.png` | 419 B | Browsers without SVG icon support, such as Safari |
+| `apple-touch-icon.png` | 1.4 KB | iOS/iPadOS Safari Favorites and Home Screen: 180×180, opaque and square (iOS rounds the corners itself) |
 
-The PNG was rendered from the SVG with headless Chromium. There's no `apple-touch-icon.png`: it only matters for iOS home-screen shortcuts and Safari's Favourites grid.
+The PNGs were rendered with headless Chromium. `apple-touch-icon.png` (added 2026-11-21) is its own flat design, a router with Wi-Fi arcs in white on the page blue, quantised to 32 colours. iOS fetches it from the site root by itself, so the pages don't need to link it.
 
 ## `cgi-bin/routerinfo`
 
@@ -39,8 +40,8 @@ It reads no input (any query string is ignored), so there's nothing to inject, a
 From the workspace root (see [`../router-ssh/README.md`](../router-ssh/README.md)):
 
 ```sh
-./router-ssh/copy www/index.html www/cgi-bin/routerinfo www/favicon.svg www/favicon-32.png router:/tmp/
-./router-ssh/connect 'cd /tmp && cp index.html favicon.svg favicon-32.png /www/ && cp routerinfo /www/cgi-bin/routerinfo && chmod 755 /www/cgi-bin/routerinfo && rm index.html routerinfo favicon.svg favicon-32.png'
+./router-ssh/copy www/index.html www/cgi-bin/routerinfo www/favicon.svg www/favicon-32.png www/apple-touch-icon.png router:/tmp/
+./router-ssh/connect 'cd /tmp && cp index.html favicon.svg favicon-32.png apple-touch-icon.png /www/ && cp routerinfo /www/cgi-bin/routerinfo && chmod 755 /www/cgi-bin/routerinfo && rm index.html routerinfo favicon.svg favicon-32.png apple-touch-icon.png'
 ```
 
 ## Restore the original redirect
@@ -48,5 +49,5 @@ From the workspace root (see [`../router-ssh/README.md`](../router-ssh/README.md
 The firmware's original page is still in the read-only root filesystem at `/rom/www/index.html`:
 
 ```sh
-./router-ssh/connect 'cp /rom/www/index.html /www/index.html; rm -f /www/cgi-bin/routerinfo /www/favicon.svg /www/favicon-32.png'
+./router-ssh/connect 'cp /rom/www/index.html /www/index.html; rm -f /www/cgi-bin/routerinfo /www/favicon.svg /www/favicon-32.png /www/apple-touch-icon.png'
 ```
