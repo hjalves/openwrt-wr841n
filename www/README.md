@@ -15,11 +15,11 @@ All three pages (this one, `traffic.html` and `devices.html`) use the same icon:
 
 | File | Size | Used by |
 |---|---|---|
-| `favicon.svg` | 335 B | Browser tabs in Chrome, Firefox and Edge (sharp at any size) |
-| `favicon-32.png` | 419 B | Browsers without SVG icon support, such as Safari |
+| `favicon.svg` | 387 B | Browser tabs in Chrome, Firefox and Edge (sharp at any size) |
+| `favicon-32.png` | 396 B | Browsers without SVG icon support, such as Safari |
 | `apple-touch-icon.png` | 1.4 KB | iOS/iPadOS Safari Favorites and Home Screen: 180×180, opaque and square (iOS rounds the corners itself) |
 
-The PNGs were rendered with headless Chromium. `apple-touch-icon.png` (added 2026-11-21) is its own flat design, a router with Wi-Fi arcs in white on the page blue, quantised to 32 colours. iOS fetches it from the site root by itself, so the pages don't need to link it.
+All three show the same symbol, a router with Wi-Fi arcs in white on the page blue (since 2026-11-21; before, the favicons showed signal bars). The favicons are a version simplified for 16–32 px: a larger router body without status lights, two thick arcs, and rounded corners, drawn on a 32-unit grid so the shapes land on whole pixels. `apple-touch-icon.png` is the detailed version, flat and quantised to 32 colours. The PNGs were rendered with headless Chromium. iOS fetches the touch icon from the site root by itself, so the pages don't need to link it.
 
 ## `cgi-bin/routerinfo`
 
