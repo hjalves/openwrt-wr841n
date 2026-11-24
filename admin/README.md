@@ -16,7 +16,7 @@ A single-page admin interface at **http://192.168.0.254/admin.html**, linked fro
 | Tab | |
 |---|---|
 | **Status** | Model, firmware, kernel, router time, uptime, load, memory, flash; LAN/WAN up or down, address, gateway, DNS; Wi-Fi state, channel, power, country, security; the Wi-Fi clients with signal, link rates and idle time, named from [lanwatch](../lanwatch/README.md). Refreshes every 5 s. |
-| **Wi-Fi** | On/off, network name, security (WPA2, WPA/WPA2, open), password, hidden; channel, width, transmit power and country. The channel, power and country lists come from the radio itself (`iwinfo`); country names come from the browser. A scan of nearby networks, with a count per channel. |
+| **Wi-Fi** | On/off, network name, security (WPA2, WPA/WPA2, open), password, hidden, WDS (`wds`: lets another access point connect as a wireless bridge, in 4-address mode); channel, width, transmit power and country. The channel, power and country lists come from the radio itself (`iwinfo`); country names come from the browser. A scan of nearby networks, with a count per channel. |
 | **Network** | LAN address, netmask, gateway, DNS servers. Shows whether the DHCP server is on, and what the LAN is using right now (address, gateway, DNS, bridge ports, MAC). |
 | **System** | Hostname; time zone (the POSIX TZ string the router needs is worked out from it, not shown); root password; services (start, stop, restart, enable or disable at boot); processes; the system log with a filter; restart. |
 | | **Processes**, like LuCI's: PID, user, CPU, memory and full command line, sortable by CPU, memory or PID, with a filter and optional kernel threads. CPU comes from BusyBox `top -b -n 2 -d 1` (the second reading; a single one always shows 0%). Hang up, Terminate and Kill send SIGHUP, SIGTERM or SIGKILL through procd's `system signal`, after a confirmation that warns specially for `procd`, `ubusd`, `rpcd`, `netifd` and `uhttpd`. |
@@ -97,6 +97,7 @@ Restarting rpcd logs out open LuCI sessions.
 
 Run against the real router, in headless Chromium (desktop, and a phone in dark mode). There were no script errors, and nothing overflowed on the phone.
 
+- **WDS toggle (2026-11-24):** shown checked to match the router's `wds=1`. In headless Chromium with saving stubbed out: unchanged → no change; unticked → only `wds=0`; ticked again → no change. The router's settings weren't touched.
 - **Login:** a wrong password is refused. Cancel and Esc on the login dialog lead back to the home page (checked 2026-11-19 in headless Chromium, no script errors). An expired session (destroyed on the router mid-use) brings up the login, then the interrupted action finishes.
 - **All five tabs load with real data.** The Wi-Fi clients are named from lanwatch.
 - **`admin-apply` on the router, through ubus, on a throwaway config:**

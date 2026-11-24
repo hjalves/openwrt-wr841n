@@ -421,6 +421,7 @@ async function viewWifi(v) {
   const show = el("button", {type: "button", class: "small", text: "Show"});
   show.onclick = () => { const p = key.type == "password"; key.type = p ? "text" : "password"; show.textContent = p ? "Hide" : "Show"; };
   const hidden = el("input", {type: "checkbox", checked: iface.hidden == "1"});
+  const wds = el("input", {type: "checkbox", checked: iface.wds == "1"});
   const chan = select([["auto", "Automatic"], ...freqs.filter(f => !f.restricted).map(f => [String(f.channel), `Channel ${f.channel} (${f.mhz} MHz)`])], radio.channel || "auto");
   const width = select([["HT20", "20 MHz"], ["HT40", "40 MHz"]], radio.htmode || "HT20");
   const seen = new Set();
@@ -453,6 +454,7 @@ async function viewWifi(v) {
     set(I, "encryption", enc.value, iface.encryption);
     if (enc.value != "none") set(I, "key", key.value, iface.key);
     set(I, "hidden", hidden.checked ? "1" : (iface.hidden == null ? "" : "0"), iface.hidden);
+    set(I, "wds", wds.checked ? "1" : (iface.wds == null ? "" : "0"), iface.wds);
     try { await applyOps(ops, true); } catch (e) { bad(e.message); }
   });
   const scanOut = el("div"), scan = el("button", {text: "Scan for nearby networks", disabled: !dev});
@@ -475,7 +477,9 @@ async function viewWifi(v) {
         field("Wi-Fi", el("label", {class: "check"}, on, "On")),
         field("Network name", ssid),
         field("Security", enc), keyRow,
-        field("Hidden", el("label", {class: "check"}, hidden, "Don't broadcast the network name"))),
+        field("Hidden", el("label", {class: "check"}, hidden, "Don't broadcast the network name")),
+        field("WDS", el("label", {class: "check"}, wds, "Allow WDS repeaters"),
+          "Lets another access point connect to this one as a wireless bridge (4-address mode), so the devices behind it join this network. Ordinary devices connect either way.")),
       card("Radio",
         field("Channel", chan, `Now on channel ${(freqs.find(f => f.active) || {}).channel || "–"}.`),
         field("Channel width", width, "40 MHz is faster but more prone to interference on 2.4 GHz."),
