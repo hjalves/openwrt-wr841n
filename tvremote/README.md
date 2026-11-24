@@ -110,7 +110,7 @@ ubus call tv power_off
 - **Keys:** Source and Menu; the arrows and OK; Back, Home and Exit; volume, mute, Info and channel.
 - **Apps panel:** a button per app, in the TV's order and with the TV's names (long ones cut with "…"; the full name on hover). It's foldable, and the page remembers whether it was open. A tap on an app while the TV is off switches it on and opens the app.
 - **Volume panel** (while the TV is on and reports it): the current volume, or "Muted (n)" in red, and a 0–100 slider. A drag sends at most a few values a second, one request at a time, and the panel ignores the TV's readings for 2.5 s after you touch the slider, so it doesn't jump back under your finger. After the volume or mute keys, the page reads the new value about 0.7 s later.
-- **Folded away:** playback keys and Guide, and the number keys.
+- **Folded away:** the four color keys (A–D: `KEY_RED`, `KEY_GREEN`, `KEY_YELLOW`, and `KEY_CYAN`, which is Samsung's name for blue), the playback keys and Guide, all in "Playback & color keys"; and the number keys.
 - **Holding a key:** the arrows, volume and channel keys repeat while held.
 - **Keyboard:** arrows, Enter, Backspace (back), Esc (exit), H (home), + and − (volume), M (mute), and the digits.
 

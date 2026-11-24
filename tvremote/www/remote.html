@@ -32,6 +32,9 @@ header{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;
 .k:focus-visible{outline:2px solid var(--series-1);outline-offset:2px}
 .k svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .k small{color:var(--text-secondary);font-size:12px}
+.pad.colors{grid-template-columns:repeat(4,1fr);margin-bottom:10px}
+.pad.colors .k{min-height:44px;gap:8px;font-weight:600}
+.pad.colors i{width:14px;height:14px;border-radius:50%;display:inline-block}
 .power{color:var(--critical)}
 .power.on{color:var(--good)}
 .gap{margin-top:16px}
@@ -121,7 +124,13 @@ details .pad{padding:0 10px 10px}
 </details>
 
 <details class="ctl">
-  <summary>Playback</summary>
+  <summary>Playback &amp; color keys</summary>
+  <div class="pad colors">
+    <button class="k" data-key="KEY_RED" aria-label="Red key (A)"><i style="background:#e0423b"></i>A</button>
+    <button class="k" data-key="KEY_GREEN" aria-label="Green key (B)"><i style="background:#2fa84f"></i>B</button>
+    <button class="k" data-key="KEY_YELLOW" aria-label="Yellow key (C)"><i style="background:#f2c12e"></i>C</button>
+    <button class="k" data-key="KEY_CYAN" aria-label="Blue key (D)"><i style="background:#2f7fe0"></i>D</button>
+  </div>
   <div class="pad">
     <button class="k" data-key="KEY_REWIND" aria-label="Rewind"><svg viewBox="0 0 24 24"><path d="M11 18l-7-6 7-6zM20 18l-7-6 7-6z"/></svg></button>
     <button class="k" data-key="KEY_PLAY" aria-label="Play"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></button>
