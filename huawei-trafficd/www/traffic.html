@@ -91,7 +91,7 @@ th{color:var(--text-secondary);font-weight:600}
 <body>
 <main class="viz-root" id="root">
 <header>
-  <div><a class="back" href="/">← Router</a><h1>LTE connection</h1></div>
+  <div><a class="back" href="/">← Home</a><h1>LTE connection</h1></div>
   <p class="status" id="status" role="status">Loading…</p>
 </header>
 
@@ -163,7 +163,7 @@ th{color:var(--text-secondary);font-weight:600}
 <section class="card" id="cardY">
   <h2 id="hY">Powerline speed (PHY rate)</h2>
   <p class="note" id="nY">&nbsp;</p>
-  <p class="legend"><span><span class="key k1"></span>Towards the router (download direction)</span><span><span class="key k2"></span>Towards the Huawei (upload direction)</span></p>
+  <p class="legend"><span><span class="key k1"></span>Towards OpenWrt (download direction)</span><span><span class="key k2"></span>Towards the Huawei (upload direction)</span></p>
   <div class="chart" id="cY" tabindex="0" aria-describedby="kbd"></div>
 </section>
 <section class="card">
@@ -644,7 +644,7 @@ function drawLoss(box, data, k = K_NET) {
   finishChart(box, svg, data, {W, ML, MR, MT, PH, AX, pw, slot, band});
 }
 
-// Powerline PHY rate per period: two lines (towards the router, towards the Huawei) on one Mbit/s axis.
+// Powerline PHY rate per period: two lines (towards OpenWrt, towards the Huawei) on one Mbit/s axis.
 function drawRate(box, data) {
   box.textContent = "";
   const W = Math.max(280, box.clientWidth), PH = 130, AX = 22, ML = 58, MR = CHART_MR, MT = 8;
@@ -652,7 +652,7 @@ function drawRate(box, data) {
   const vals = data.bk.flatMap(x => x.yn ? [x.ydn, x.yup] : []);
   const ticks = niceTicks(Math.max(100, ...vals)), top = ticks[ticks.length - 1];
   const svg = el("svg", {viewBox: `0 0 ${W} ${MT + PH + AX}`, height: MT + PH + AX, role: "img",
-                         "aria-label": `Powerline PHY rate towards the router and towards the Huawei, average per ${bucketName(data.b)}`}, box);
+                         "aria-label": `Powerline PHY rate towards OpenWrt and towards the Huawei, average per ${bucketName(data.b)}`}, box);
   const y = v => MT + PH - v / top * PH;
   for (const t of ticks) {
     el("line", {x1: ML, x2: W - MR, y1: y(t), y2: y(t), class: t ? "grid" : "base"}, svg);
@@ -742,7 +742,7 @@ function setHover(i, cx, cy) {
         tip.appendChild(r);
       }
     }
-    if (x.yn) for (const [k, name, color] of [["ydn", "PHY rate towards the router", "--series-1"], ["yup", "towards the Huawei", "--series-2"]]) {
+    if (x.yn) for (const [k, name, color] of [["ydn", "PHY rate towards OpenWrt", "--series-1"], ["yup", "towards the Huawei", "--series-2"]]) {
       const r = document.createElement("div"), key = document.createElement("i"),
             v = document.createElement("b"), s = document.createElement("span");
       r.className = "r";

@@ -1,6 +1,6 @@
 # admin: router admin page without Lua
 
-A single-page admin interface at **http://192.168.0.254/admin.html**, linked from the landing page as "Router admin". It runs entirely in the browser and talks to the router only through uhttpd's `/ubus` JSON-RPC bridge (rpcd), plus `cgi-io` for file uploads. No Lua runs on the router, so it can replace LuCI in a LuCI-free firmware image (step 2 of the plan: Image Builder). LuCI stays installed and linked as a fallback until then.
+A single-page admin interface at **http://192.168.0.254/admin.html**, linked from the landing page as "Settings". It runs entirely in the browser and talks to the router only through uhttpd's `/ubus` JSON-RPC bridge (rpcd), plus `cgi-io` for file uploads. No Lua runs on the router, so it can replace LuCI in a LuCI-free firmware image (step 2 of the plan: Image Builder). LuCI stays installed and linked as a fallback until then.
 
 | | |
 |---|---|

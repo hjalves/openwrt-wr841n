@@ -17,7 +17,7 @@ OpenWrt 15.05.1 has no small mDNS responder: Avahi's packages are about 138 KiB 
 - **The reverse name** of that address (`254.0.168.192.in-addr.arpa`) → `openwrt.local`.
 - **The configured services:**
   - the service-type list (`_services._dns-sd._udp.local` → `_http._tcp.local`);
-  - each instance (for example `OpenWrt router._http._tcp.local`), with its SRV record (port and host) and TXT record (for example `path=/`);
+  - each instance (for example `OpenWrt._http._tcp.local`), with its SRV record (port and host) and TXT record (for example `path=/`);
   - answers that include the related records, so a client gets everything in one reply.
 
 ## Protocol behaviour (RFC 6762 / RFC 6763)
@@ -49,7 +49,7 @@ config tinymdns 'main'
 	#option hostname 'openwrt'      # default: the system hostname, lowercased
 
 config service
-	option name 'OpenWrt router'    # instance name: spaces allowed, no commas
+	option name 'OpenWrt'           # instance name: spaces allowed, no commas
 	option type '_http._tcp'
 	option port '80'
 	list txt 'path=/'               # key=value, no spaces

@@ -56,7 +56,7 @@ form.input input{font:inherit;color:var(--text);background:var(--page);border:1p
 <body>
 <main>
 <header>
-  <div><a class="back" href="/">← Router</a><h1 class="title">Gemini</h1></div>
+  <div><a class="back" href="/">← Home</a><h1 class="title">Gemini</h1></div>
 </header>
 <form class="bar" id="bar">
   <input id="addr" type="text" inputmode="url" autocomplete="off" spellcheck="false" aria-label="Gemini address" placeholder="gemini://…">
@@ -174,7 +174,7 @@ async function go(url, opts = {}) {
     if (my !== seq) return;
     $("page").classList.remove("loading");
     setStatus([el("b", {text: "Error"})]);
-    return showError("Can't reach the gateway", "The router didn't answer: " + e.message);
+    return showError("Can't reach the gateway", "The gateway didn't answer: " + e.message);
   }
   if (my !== seq) return;
   const ms = Math.round(performance.now() - started), h = n => res.headers.get(n);

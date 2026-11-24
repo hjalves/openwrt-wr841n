@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
-<title>Router admin</title>
+<title>Settings</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
 <style>
@@ -81,7 +81,7 @@ dialog p{margin:0 0 10px}
 <body>
 <header>
   <div class="top">
-    <div><h1>Router admin</h1><p class="sub" id="who">&nbsp;</p></div>
+    <div><h1>Settings</h1><p class="sub" id="who">&nbsp;</p></div>
     <div class="acts"><a href="/">Home</a><button class="link" id="logout" hidden>Log out</button></div>
   </div>
   <nav id="tabs" aria-label="Sections" hidden>
@@ -92,7 +92,7 @@ dialog p{margin:0 0 10px}
 <dialog id="login">
   <form method="dialog" id="loginForm">
     <h2>Log in</h2>
-    <p class="hint" id="loginWhy">Use the router's root password.</p>
+    <p class="hint" id="loginWhy">Use the root password.</p>
     <input type="text" name="username" value="root" autocomplete="username" class="sr" tabindex="-1" aria-hidden="true">
     <div class="row" style="grid-template-columns:1fr;margin-top:12px"><label for="pw" class="sr">Password</label>
       <input type="password" id="pw" autocomplete="current-password" placeholder="Password" required></div>
@@ -169,7 +169,7 @@ async function call(obj, method, args = {}, retry = true) {
     const r = await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({jsonrpc: "2.0", id: ++rid, method: "call", params: [sid || ZERO, obj, method, args]})});
     j = await r.json();
-  } catch (e) { throw new Error("Can't reach the router."); }
+  } catch (e) { throw new Error("Can't reach the device."); }
   if (j.error) {
     if (j.error.code == -32002 && retry) { await relogin(); return call(obj, method, args, false); }
     throw new Error(j.error.message || "Request failed");
@@ -188,9 +188,9 @@ async function helper(...p) {
 function relogin(why) {
   if (!loginWait) loginWait = new Promise(res => {
     const d = $("login");
-    $("loginWhy").textContent = why || (sid ? "Your session has expired. Log in again to continue." : "Use the router's root password.");
+    $("loginWhy").textContent = why || (sid ? "Your session has expired. Log in again to continue." : "Use the root password.");
     $("loginErr").hidden = true; $("pw").value = "";
-    // Without a session this page has nothing to show: Cancel (or Esc) goes back to the router's home page.
+    // Without a session this page has nothing to show: Cancel (or Esc) goes back to the device's home page.
     const leave = () => { location.href = "/"; };
     d.oncancel = e => { e.preventDefault(); leave(); };
     $("loginCancel").onclick = leave;
@@ -216,7 +216,7 @@ async function rawLogin(password) {   // session id, or null for a wrong passwor
     j = await (await fetch("/ubus", {method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({jsonrpc: "2.0", id: ++rid, method: "call",
         params: [ZERO, "session", "login", {username: "root", password, timeout: 1800}]})})).json();
-  } catch (e) { throw new Error("Can't reach the router."); }
+  } catch (e) { throw new Error("Can't reach the device."); }
   return j.result && j.result[0] === 0 ? j.result[1].ubus_rpc_session : null;
 }
 
@@ -232,13 +232,13 @@ function ask(title, body, buttons) {    // buttons: [[value, label, class]], res
 }
 const confirmAct = (title, body, label, cls = "primary") => ask(title, body, [[true, label, cls], [false, "Cancel"]]);
 
-// A settings change is live but not yet kept: offer Keep / Undo, undone by the router after the countdown.
+// A settings change is live but not yet kept: offer Keep / Undo, undone by the device after the countdown.
 async function pendingDialog(newHost) {
   const d = $("dlg"), left = el("strong"), msg = el("p"), keep = el("button", {class: "primary", text: "Keep changes"}),
     undo = el("button", {text: "Undo now"}), err = el("p", {class: "err", hidden: true});
   let secs = ROLLBACK_SECS, done = false, polling = false;
   const body = newHost
-    ? [el("p", null, "The router is moving to ", el("strong", {text: newHost}), ". Open the new address within ", left,
+    ? [el("p", null, "The device is moving to ", el("strong", {text: newHost}), ". Open the new address within ", left,
         " seconds to keep the change, otherwise the old settings come back."),
       el("p", null, el("a", {href: `http://${newHost}/admin.html#keep=${sid}`, text: `Open http://${newHost}/admin.html`}))]
     : [el("p", null, "The new settings are active. If everything still works, keep them. Otherwise they're undone automatically in ", left, " seconds."), msg];
@@ -257,7 +257,7 @@ async function pendingDialog(newHost) {
         if (s == "idle") finish("The change wasn't kept in time, so the previous settings were restored.");
         else secs = Math.min(secs, +s.split(" ")[1]);
       } catch (e) {
-        msg.textContent = "Waiting for the router… (reconnect to its Wi-Fi if you changed the network name or password)";
+        msg.textContent = "Waiting for the device… (reconnect to its Wi-Fi if you changed the network name or password)";
       }
       polling = false;
     };
@@ -296,9 +296,9 @@ function differ(cfg) {
   return {ops, set};
 }
 
-// Wait for the router to go away and come back (reboot, firmware), then reload.
+// Wait for the device to go away and come back (reboot, firmware), then reload.
 async function waitForRouter(title, text, expectSecs) {
-  const d = $("dlg"), st = el("p", {class: "muted", text: "Waiting for the router to go down…"});
+  const d = $("dlg"), st = el("p", {class: "muted", text: "Waiting for the device to go down…"});
   d.replaceChildren(el("h2", {text: title}), el("p", {text}), st);
   d.oncancel = e => e.preventDefault(); d.showModal();
   const t0 = Date.now(), ping = async () => {
@@ -312,7 +312,7 @@ async function waitForRouter(title, text, expectSecs) {
     if (up == null) wentDown = true;
     else if (wentDown || (lastUp != null && up < lastUp)) { st.textContent = "Back. Reloading…"; sessionStorage.removeItem("admin-sid"); location.reload(); return; }
     if (up != null) lastUp = up;
-    st.textContent = (wentDown ? "Restarting… " : "Waiting for the router to go down… ") + `${el_} s` +
+    st.textContent = (wentDown ? "Restarting… " : "Waiting for the device to go down… ") + `${el_} s` +
       (el_ > expectSecs ? ". This is taking longer than usual; keep this page open." : "");
   }
 }
@@ -378,7 +378,7 @@ async function viewStatus(v) {
     const enc = wi && wi.encryption;
     grid.replaceChildren(
       card("System", kv([["Model", board.model], ["Firmware", board.release.description], ["Kernel", board.kernel],
-        ["Router time", lt], ["Uptime", fmtUp(info.uptime)], ["Load", info.load.map(l => (l / 65536).toFixed(2)).join(" · ")],
+        ["Device time", lt], ["Uptime", fmtUp(info.uptime)], ["Load", info.load.map(l => (l / 65536).toFixed(2)).join(" · ")],
         ["Memory", ri ? `${fmtMB(ri.mem_available_kb * 1024)} free of ${fmtMB(ri.mem_total_kb * 1024)}` : fmtMB(info.memory.free) + " free"],
         ["Flash", ri ? `${ri.flash_free_kb} KB free of ${ri.flash_total_kb} KB` : null]])),
       card("Network", kv([...ifs.map(i => [i.interface.toUpperCase(), state(i.up, i.up ? "Up" : "Down")]),
@@ -397,7 +397,7 @@ async function viewStatus(v) {
     });
     clients.replaceChildren(card("Wi-Fi clients", rows.length ? el("div", {class: "scroll"}, el("table", null,
       el("thead", null, el("tr", null, ["Device", "IP", "MAC", "Signal", "Mbit/s to / from", "Last active"].map((h, i) => el("th", {class: i > 2 ? "num" : null, text: h})))),
-      el("tbody", null, rows))) : el("p", {class: "muted", text: "No devices connected to this router's Wi-Fi."}),
+      el("tbody", null, rows))) : el("p", {class: "muted", text: "No devices connected to this access point's Wi-Fi."}),
       el("p", {class: "hint", text: "Names come from the Devices page (lanwatch). Devices on the Huawei's own Wi-Fi aren't listed here."})));
   };
   await tick(); every(5000, tick);
@@ -487,7 +487,7 @@ async function viewWifi(v) {
         field("Country", country, "Sets the channels and power allowed."))),
     el("div", {style: "margin:0 0 22px"}, err, el("div", {class: "btns", style: "margin-top:0"}, save),
       el("p", {class: "hint", text: `Saves both cards. You then have ${ROLLBACK_SECS} seconds to confirm. If you're connected through this Wi-Fi and change its name or password, reconnect to the new network first.`})),
-    card("Nearby networks", el("p", {class: "hint", text: "Scanning briefly pauses this router's Wi-Fi for its clients."}), el("div", {class: "btns"}, scan), scanOut));
+    card("Nearby networks", el("p", {class: "hint", text: "Scanning briefly pauses this access point's Wi-Fi for its clients."}), el("div", {class: "btns"}, scan), scanOut));
 }
 
 /* ---------- Network ---------- */
@@ -523,8 +523,8 @@ async function viewNetwork(v) {
       if (servers.join(" ") != lan.dns.join(" ")) { ops.push("delete", "network.lan.dns"); servers.forEach(s => ops.push("add_list", "network.lan.dns=" + s)); }
     } else set("lan", "dns", servers.join(" "), lan.dns);
     const moved = ip.value != lan.ipaddr && ip.value != location.hostname ? ip.value : null;
-    if (moved && !await confirmAct("Change the router's address?",
-      [`The router will move to ${ip.value}. This page will lose its connection; you'll get a link to the new address, and have ${ROLLBACK_SECS} seconds to open it.`], "Change address")) return;
+    if (moved && !await confirmAct("Change the device's address?",
+      [`The device will move to ${ip.value}. This page will lose its connection; you'll get a link to the new address, and have ${ROLLBACK_SECS} seconds to open it.`], "Change address")) return;
     try { await applyOps(ops, true, moved); } catch (e) { err.textContent = e.message; err.hidden = false; }
   });
   const a4 = st && (st["ipv4-address"] || [])[0], gw4 = st && (st.route || []).find(r => r.target == "0.0.0.0" && !r.mask);
@@ -532,11 +532,11 @@ async function viewNetwork(v) {
     ["Gateway", gw4 && gw4.nexthop], ["DNS", (st["dns-server"] || []).join(" · ")], ["Up for", st.uptime != null ? fmtUp(st.uptime) : null],
     ["Device", st.l3_device], ["Bridge ports", devst && devst["bridge-members"] ? devst["bridge-members"].join(" · ") : null],
     ["MAC", devst && devst.macaddr && el("span", {class: "mono", text: devst.macaddr})]]) : el("p", {class: "muted", text: "Status unavailable."}),
-    el("p", {class: "hint", text: "What the router is using right now, which can differ from the saved settings until they're applied."}));
+    el("p", {class: "hint", text: "What the device is using right now, which can differ from the saved settings until they're applied."}));
   v.append(pair(card("LAN",
     field("Address", ip), field("Netmask", mask),
     field("Gateway", gw),
-    field("DNS servers", dns, "Separated by spaces. Used by the router itself."),
+    field("DNS servers", dns, "Separated by spaces. Used by the device itself."),
     el("div", {class: "row"}, el("span", {class: "lbl", text: "DHCP server"}),
       el("div", {style: "padding-top:7px"}, !hasDnsmasq ? "Not installed: another router hands out addresses." : dl.ignore == "1" ? "Off: another router hands out addresses." : "On")),
     err, el("div", {class: "btns"}, save),
@@ -547,12 +547,12 @@ async function viewNetwork(v) {
 async function viewSystem(v) {
   const [sys, info] = await Promise.all([call("uci", "get", {config: "system"}), call("system", "info")]);
   const s = Object.values(sys.values || {}).find(x => x[".type"] == "system") || {}, S = s[".name"];
-  // Router and time
+  // Device and time
   const host = el("input", {type: "text", value: s.hostname || "", maxlength: 63, spellcheck: "false"});
   let zones = []; try { zones = Intl.supportedValuesOf("timeZone"); } catch (e) { /* old browser */ }
   if (!zones.includes("UTC")) zones = ["UTC", ...zones];
   const zone = select(zones.map(z => [z, z.replace(/_/g, " ")]), s.zonename || "UTC");
-  let posix = s.timezone || "";   // the POSIX TZ string the router's C library needs, worked out from the zone
+  let posix = s.timezone || "";   // the POSIX TZ string the device's C library needs, worked out from the zone
   zone.onchange = () => { try { posix = zone.value == "UTC" ? "UTC0" : tzPosix(zone.value); } catch (e) { posix = ""; } };
   const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const useMine = el("button", {type: "button", class: "small", text: "Use this device's time zone", hidden: !zones.includes(mine) || mine == s.zonename});
@@ -582,7 +582,7 @@ async function viewSystem(v) {
     try {
       await call("rpc-sys", "password_set", {user: "root", password: p1.value});
       const check = await rawLogin(p1.value);        // the change is only reported by logging in with it
-      if (!check) return fail("The router didn't accept the new password. The old one is still valid.");
+      if (!check) return fail("The device didn't accept the new password. The old one is still valid.");
       await call("session", "destroy", {ubus_rpc_session: check}).catch(() => {});
       p1.value = p2.value = ""; toast("Password changed. It's also the SSH password.");
     } catch (e) { fail(e.message); }
@@ -595,7 +595,7 @@ async function viewSystem(v) {
     const names = (ls.entries || []).filter(e => e.type == "file").map(e => e.name).sort();
     const act = (name, a, btn) => busy(btn, async () => {
       if (a == "stop" && /^(network|uhttpd|rpcd|dropbear|firewall)$/.test(name) &&
-        !await confirmAct(`Stop ${name}?`, [`The router and this page depend on ${name}. Stopping it may cut you off until the router restarts.`], "Stop", "danger")) return;
+        !await confirmAct(`Stop ${name}?`, [`The device and this page depend on ${name}. Stopping it may cut you off until the device restarts.`], "Stop", "danger")) return;
       try {
         if (a == "enable" || a == "disable") { const r = await exec("/etc/init.d/" + name, [a]); if (r.code) throw new Error((r.stdout || r.stderr || "failed").trim()); }
         else await helper("bg", "/etc/init.d/" + name, a);
@@ -634,7 +634,7 @@ async function viewSystem(v) {
   const signal = async (p, sig, name) => {
     const core = CORE.test(p.cmd);
     if (!await confirmAct(`${name} process ${p.pid}?`, [el("p", {class: "mono", text: p.cmd}),
-      core ? "This page depends on this process: you may lose access until the router restarts." :
+      core ? "This page depends on this process: you may lose access until the device restarts." :
         sig == 1 ? "Hang up asks many daemons to reload their configuration." : sig == 15 ? "Asks the process to exit cleanly. Services managed by procd may be restarted." :
           "Ends the process immediately, without letting it save anything."], name, sig == 1 && !core ? "primary" : "danger")) return;
     try { await call("system", "signal", {pid: p.pid, signum: sig}); toast(`Sent ${name.toLowerCase()} to ${p.pid}.`); }
@@ -668,16 +668,16 @@ async function viewSystem(v) {
   filt.oninput = showLog;
   const refresh = el("button", {class: "small", text: "Refresh"}); refresh.onclick = () => busy(refresh, loadLog);
   // Restart
-  const reboot = el("button", {class: "danger", text: "Restart router"});
+  const reboot = el("button", {class: "danger", text: "Restart device"});
   reboot.onclick = async () => {
-    if (!await confirmAct("Restart the router?", ["Its Wi-Fi and this page are unavailable for about a minute."], "Restart", "danger")) return;
+    if (!await confirmAct("Restart the device?", ["Its Wi-Fi and this page are unavailable for about a minute."], "Restart", "danger")) return;
     try { await helper("bg", "/sbin/reboot"); } catch (e) { toast(e.message); return; }
-    waitForRouter("Restarting", "The router is restarting. This page reloads when it's back.", 120);
+    waitForRouter("Restarting", "The device is restarting. This page reloads when it's back.", 120);
   };
   v.append(
-    pair(card("Router",
+    pair(card("Device",
       field("Hostname", host, "Also its name on the network: " + (s.hostname || "openwrt").toLowerCase() + ".local"),
-      field("Time zone", zone, el("span", null, `Router time: ${rtime}. `, useMine)),
+      field("Time zone", zone, el("span", null, `Device time: ${rtime}. `, useMine)),
       err1, el("div", {class: "btns"}, save1)),
     card("Password", el("p", {class: "hint", text: "The root password, used for this page and SSH (and LuCI, where installed)."}),
       field("New password", p1), field("Repeat it", p2), err2, el("div", {class: "btns"}, save2))),
@@ -702,7 +702,7 @@ function upload(path, file, onprogress) {
       if (j && j.size != null) res(j);
       else rej(new Error(j && j.message ? j.message + (j.failure ? ` (${j.failure[1]})` : "") : x.responseText.trim() || "Upload failed."));
     };
-    x.onerror = () => rej(new Error("Upload failed: can't reach the router."));
+    x.onerror = () => rej(new Error("Upload failed: can't reach the device."));
     x.send(fd);
   });
 }
@@ -735,15 +735,15 @@ async function viewMaintenance(v) {
       await upload("/tmp/backup.tar.gz", f);
       const t = await exec("/bin/tar", ["-tzf", "/tmp/backup.tar.gz"]);
       const files = (t.stdout || "").split("\n").filter(Boolean);
-      if (t.code || !files.length) throw new Error("That isn't a backup made by this kind of router (not a .tar.gz archive).");
+      if (t.code || !files.length) throw new Error("That isn't a backup made by this kind of device (not a .tar.gz archive).");
       const odd = files.filter(x => !/^(\.\/)?etc\//.test(x));
       const ok = await confirmAct("Restore this backup?", [
-        `It contains ${files.length} files${odd.length ? `, including ${odd.length} outside /etc` : ""}. They replace the current settings, then the router restarts.`,
+        `It contains ${files.length} files${odd.length ? `, including ${odd.length} outside /etc` : ""}. They replace the current settings, then the device restarts.`,
         el("pre", {class: "log mono", style: "max-height:160px", text: files.join("\n")})], "Restore and restart", "danger");
       if (!ok) { await exec("/bin/rm", ["-f", "/tmp/backup.tar.gz"]); return; }
       await helper("restore", "/tmp/backup.tar.gz");
       await helper("bg", "/sbin/reboot");
-      waitForRouter("Restoring", "The settings were restored and the router is restarting.", 120);
+      waitForRouter("Restoring", "The settings were restored and the device is restarting.", 120);
     } catch (e) {
       exec("/bin/rm", ["-f", "/tmp/backup.tar.gz"]).catch(() => {});
       rerr.textContent = e.message; rerr.hidden = false;
@@ -771,14 +771,14 @@ async function viewMaintenance(v) {
       cancel.onclick = async () => { await call("rpc-sys", "upgrade_clean").catch(() => {}); fout.replaceChildren(); toast("Firmware file removed."); };
       flash.onclick = async () => {
         if (!await confirmAct("Flash this firmware?", [
-          "Don't unplug the router while it's flashing: that can leave it unable to start. It takes a few minutes.",
+          "Don't unplug the device while it's flashing: that can leave it unable to start. It takes a few minutes.",
           keep.checked ? "Settings are kept. Programs added after the current firmware was flashed are removed, unless the new firmware includes them."
-            : "All settings are erased: the router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Flash", "danger")) return;
+            : "All settings are erased: the device comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Flash", "danger")) return;
         await call("rpc-sys", "upgrade_start", {keep: keep.checked});
-        waitForRouter("Flashing firmware", "Don't unplug the router. This page reloads when it's back" + (keep.checked ? "." : " (if it comes back at this address)."), 300);
+        waitForRouter("Flashing firmware", "Don't unplug the device. This page reloads when it's back" + (keep.checked ? "." : " (if it comes back at this address)."), 300);
       };
       fout.replaceChildren(kv([["File", f.name], ["Size", `${up.size.toLocaleString()} bytes`], ["MD5", el("span", {class: "mono", text: up.checksum})],
-        ["Check", good ? el("span", {class: "ok", text: "Valid image for this router"}) : el("span", {class: "err", text: "Rejected" + (msg ? ": " + msg : "")})]]),
+        ["Check", good ? el("span", {class: "ok", text: "Valid image for this device"}) : el("span", {class: "err", text: "Rejected" + (msg ? ": " + msg : "")})]]),
         el("p", {class: "hint", text: "Compare the MD5 with the one published for the download."}),
         field("Keep settings", el("label", {class: "check"}, keep, "Keep the current configuration")),
         el("div", {class: "btns"}, flash, cancel));
@@ -788,9 +788,9 @@ async function viewMaintenance(v) {
   const reset = el("button", {class: "danger", text: "Reset to factory settings…"});
   reset.onclick = async () => {
     if (!await confirmAct("Erase all settings?", ["Everything changed since the firmware was flashed is erased: settings, passwords and any programs added afterwards. Programs built into the firmware stay.",
-      "The router comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Erase everything", "danger")) return;
+      "The device comes back at 192.168.1.1 with its own DHCP server, which can disturb this network."], "Erase everything", "danger")) return;
     try { await call("rpc-sys", "factory"); } catch (e) { toast(e.message); return; }
-    waitForRouter("Resetting", "The router is erasing its settings and restarting. It will come back at 192.168.1.1, not here.", 180);
+    waitForRouter("Resetting", "The device is erasing its settings and restarting. It will come back at 192.168.1.1, not here.", 180);
   };
   v.append(
     pair(card("Backup", el("p", {class: "hint", text: "The configuration files (/etc/config and others listed for keeping), as a .tar.gz. It includes the password hash and Wi-Fi password: keep it private."}), el("div", {class: "btns"}, dl)),
