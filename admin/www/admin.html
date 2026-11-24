@@ -69,6 +69,10 @@ button:disabled{opacity:.55;cursor:default}
 .err{color:var(--bad);font-size:14px;margin:8px 0 0}
 .ok{color:var(--good)}
 pre.log{margin:0;max-height:480px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.crumbs{gap:4px;font-size:15px}.nowrap{white-space:nowrap}td.fname{overflow-wrap:anywhere}
+table.files td.num{white-space:nowrap}table.files td.fname button{text-align:left}table.files .badge{margin-left:6px}
+@media (max-width:600px){table.files .perm{display:none}table.files td.fname{min-width:9em;overflow-wrap:break-word}table.files .date{font-size:12px;white-space:normal;min-width:6.5em}}
+.badge{display:inline-block;font-size:12px;padding:1px 7px;border-radius:9px;background:var(--wash);color:var(--text2);white-space:nowrap}
 progress{width:100%;max-width:340px}
 dialog{border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);padding:22px 24px;max-width:min(480px,92vw)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
@@ -85,7 +89,7 @@ dialog p{margin:0 0 10px}
     <div class="acts"><a href="/">Home</a><button class="link" id="logout" hidden>Log out</button></div>
   </div>
   <nav id="tabs" aria-label="Sections" hidden>
-    <a href="#status">Status</a><a href="#wifi">Wi-Fi</a><a href="#network">Network</a><a href="#system">System</a><a href="#maintenance">Backup<span class="wide"> &amp; firmware</span></a>
+    <a href="#status">Status</a><a href="#wifi">Wi-Fi</a><a href="#network">Network</a><a href="#system">System</a><a href="#files">Files</a><a href="#maintenance">Backup<span class="wide"> &amp; firmware</span></a>
   </nav>
 </header>
 <main id="view"></main>
@@ -802,11 +806,152 @@ async function viewMaintenance(v) {
     card("Factory reset", el("p", {class: "hint", text: "Erases all settings, and programs added after the firmware was flashed."}), el("div", {class: "btns"}, reset))));
 }
 
+/* ---------- Files (read-only) ---------- */
+const READ_MAX = 262143;                      // rpcd's file.read refuses 256 KiB and more
+const CHUNK = 196608, CHUNK_TMP = "/tmp/.admin-download";
+const NO_READ = /^\/(proc|sys|dev)(\/|$)/;    // pseudo-files there can block forever
+const NO_OVERLAY = /^\/(tmp|var|proc|sys|dev|overlay|rom|mnt)(\/|$)/;
+const MONTHS = {Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12};
+const joinPath = (dir, name) => (dir == "/" ? "" : dir) + "/" + name;
+function normPath(p) {                        // resolve "." and ".." (no symlinks)
+  const out = [];
+  for (const s of p.split("/")) { if (s == "..") out.pop(); else if (s && s != ".") out.push(s); }
+  return "/" + out.join("/");
+}
+const pad2 = n => String(n).padStart(2, "0");
+function fmtSize(n) { return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB" : (n / 1048576).toFixed(1) + " MB"; }
+function b64bytes(b64) { const s = atob(b64), a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+
+// BusyBox "ls -lAe": perms, links, owner, group, size (or "major, minor"), full date, name [-> target].
+function parseLs(out) {
+  const re = /^([-dlcbps][-rwxsStT]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+(?:,\s*\d+)?)\s+\w{3} (\w{3}) +(\d+) (\d\d:\d\d):\d\d (\d{4}) (.*)$/;
+  return (out || "").split("\n").map(l => re.exec(l)).filter(Boolean).map(m => {
+    let name = m[9], target = null;
+    if (m[1][0] == "l") { const i = name.indexOf(" -> "); if (i > 0) { target = name.slice(i + 4); name = name.slice(0, i); } }
+    return {type: m[1][0], perms: m[1], owner: m[2], group: m[3], size: /,/.test(m[4]) ? null : +m[4], device: /,/.test(m[4]) ? m[4].replace(/\s+/g, "") : null,
+            date: `${m[8]}-${pad2(MONTHS[m[5]])}-${pad2(m[6])} ${m[7]}`, name, target};
+  });
+}
+
+// Read a whole file as bytes: one file.read up to READ_MAX, else slice by slice through /tmp.
+async function readBytes(path, size, onprogress) {
+  if (size <= READ_MAX) return b64bytes((await call("file", "read", {path, base64: true})).data || "");
+  const out = new Uint8Array(size);
+  let off = 0;
+  try {
+    for (let i = 0; off < size; i++) {
+      const r = await exec("/bin/dd", [`if=${path}`, `of=${CHUNK_TMP}`, "bs=65536", `skip=${i * 3}`, "count=3"]);
+      if (r.code) throw new Error((r.stderr || "dd failed").trim());
+      const part = b64bytes((await call("file", "read", {path: CHUNK_TMP, base64: true})).data || "");
+      if (!part.length) break;
+      out.set(part.subarray(0, size - off), off);
+      off += part.length;
+      if (onprogress) onprogress(Math.min(1, off / size));
+    }
+  } finally { await exec("/bin/rm", ["-f", CHUNK_TMP]).catch(() => {}); }
+  return off >= size ? out : out.subarray(0, off);
+}
+
+async function viewFiles(v) {
+  let dir = decodeURIComponent(location.hash.slice(1).replace(/^files/, "")) || "/";
+  if (!dir.startsWith("/")) dir = "/" + dir;
+  dir = dir.replace(/\/+$/, "") || "/";
+  const go = p => { location.hash = "#files" + encodeURI(p == "/" ? "" : p); };
+
+  const [ls, upper, rom] = await Promise.all([
+    exec("/bin/ls", ["-lAe", "--", dir]),
+    NO_OVERLAY.test(dir) ? null : exec("/bin/ls", ["-A", "--", "/overlay/upper" + (dir == "/" ? "" : dir)]).catch(() => null),
+    NO_OVERLAY.test(dir) ? null : exec("/bin/ls", ["-A", "--", "/rom" + (dir == "/" ? "" : dir)]).catch(() => null)]);
+  const names = r => new Set(r && !r.code ? (r.stdout || "").split("\n").filter(Boolean) : []);
+  const up = names(upper), ro = names(rom);
+
+  // Path bar: clickable segments, and a box to type a path.
+  const crumbs = el("div", {class: "inline crumbs"});
+  const parts = dir.split("/").filter(Boolean);
+  crumbs.append(el("button", {class: "link", text: "/", onclick: () => go("/")}));
+  parts.forEach((p, i) => {
+    const target = "/" + parts.slice(0, i + 1).join("/");
+    crumbs.append(i == parts.length - 1 ? el("strong", {text: p}) : el("button", {class: "link", text: p, onclick: () => go(target)}), i < parts.length - 1 ? el("span", {class: "muted", text: "/"}) : "");
+  });
+  const pathIn = el("input", {type: "text", value: dir, spellcheck: "false", autocomplete: "off", style: "flex:1;min-width:160px", "aria-label": "Path"});
+  const pathForm = el("form", {class: "inline", style: "margin-top:10px"}, pathIn, el("button", {type: "submit", text: "Go"}));
+  pathForm.onsubmit = e => { e.preventDefault(); const p = pathIn.value.trim(); if (p) go(p.startsWith("/") ? p : joinPath(dir, p)); };
+
+  const viewer = el("div");
+  if (ls.code) {
+    v.append(card("Files", crumbs, pathForm, el("p", {class: "err", text: (ls.stderr || ls.stdout || "Can't list this folder.").trim()})));
+    return;
+  }
+  const entries = parseLs(ls.stdout).sort((a, b) => ((b.type == "d") - (a.type == "d")) || a.name.localeCompare(b.name));
+
+  async function open(e) {
+    const path = joinPath(dir, e.name), info = [];
+    const head = el("div", {class: "inline", style: "justify-content:space-between;margin-bottom:10px"}, el("strong", {class: "mono", text: path}));
+    const dl = el("button", {class: "small", text: "Download"}), close = el("button", {class: "small", text: "Close"});
+    close.onclick = () => viewer.replaceChildren();
+    head.append(el("div", {class: "inline"}, dl, close));
+    info.push(`${fmtSize(e.size)} · ${e.perms} ${e.owner}:${e.group} · ${e.date}`);
+    const body = el("div", null, el("p", {class: "muted", text: "Reading…"}));
+    viewer.replaceChildren(card("File", head, el("p", {class: "hint", text: info.join("")}), body));
+    viewer.scrollIntoView({behavior: "smooth", block: "nearest"});
+    dl.onclick = () => busy(dl, async () => {
+      try {
+        const bytes = await readBytes(path, e.size, f => { dl.textContent = `Downloading… ${Math.round(f * 100)} %`; });
+        const a = el("a", {href: URL.createObjectURL(new Blob([bytes], {type: "application/octet-stream"})), download: e.name});
+        document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      } catch (err) { toast(err.message); }
+      dl.textContent = "Download";
+    });
+    if (e.size > READ_MAX) return body.replaceChildren(el("p", {class: "hint", text: `Too large to show here (over 256 KB). Download it instead.`}));
+    try {
+      const bytes = await readBytes(path, e.size);
+      if (bytes.subarray(0, 8192).includes(0)) return body.replaceChildren(el("p", {class: "hint", text: "Binary file: download it to look at it."}));
+      const text = new TextDecoder().decode(bytes);
+      body.replaceChildren(el("pre", {class: "log mono", text: text || "(empty file)"}),
+        el("p", {class: "hint", text: `${text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0} lines`}));
+    } catch (err) { body.replaceChildren(errBox(err)); }
+  }
+
+  const rows = entries.map(e => {
+    const nameCell = el("td", {class: "fname"});
+    const label = e.name + (e.type == "d" ? "/" : "");
+    if (e.type == "d") nameCell.append(el("button", {class: "link", text: label, onclick: () => go(joinPath(dir, e.name))}));
+    else if (e.type == "-" && !NO_READ.test(dir)) nameCell.append(el("button", {class: "link", text: label, onclick: () => open(e)}));
+    else if (e.type == "l" && e.target != null && !NO_READ.test(dir)) {
+      // Follow the link: a folder opens as a folder, a file opens in the viewer.
+      const target = normPath(e.target.startsWith("/") ? e.target : joinPath(dir, e.target));
+      nameCell.append(el("button", {class: "link", text: label, title: "Follow the link to " + target, onclick: async () => {
+        let st;
+        try { st = await call("file", "stat", {path: joinPath(dir, e.name)}); } catch (err) { toast("Broken link: " + target + " doesn't exist."); return; }
+        if (st.type == "directory") go(target);
+        else if (st.type == "file") open({...e, size: st.size, perms: "→ " + target, date: new Date(st.mtime * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC"});
+        else toast(target + " isn't a regular file or folder.");
+      }}));
+    } else nameCell.append(el("span", {text: label}));
+    if (e.target != null) nameCell.append(el("span", {class: "muted", text: " → " + e.target}));
+    if (up.has(e.name)) nameCell.append(el("span", {class: "badge", text: !ro.has(e.name) ? "added" : e.type == "d" ? "changes inside" : "changed",
+      title: !ro.has(e.name) ? "Not in the firmware image: added in the writable area" : "Differs from the firmware image (stored in the writable area)"}));
+    return el("tr", null, nameCell,
+      el("td", {class: "num", text: e.size != null && e.type != "d" ? fmtSize(e.size) : e.device ? "dev " + e.device : ""}),
+      el("td", {class: "nowrap date", text: e.date}),
+      el("td", {class: "mono nowrap perm", text: e.perms}));
+  });
+  const up1 = dir != "/" ? el("tr", null, el("td", {colspan: 4}, el("button", {class: "link", text: "../", onclick: () => go(dir.replace(/\/[^/]*$/, "") || "/")}))) : null;
+  v.append(card("Files", crumbs, pathForm,
+      el("div", {class: "scroll", style: "margin-top:12px"}, el("table", {class: "files"},
+        el("thead", null, el("tr", null, ["Name", "Size", "Modified", "Permissions"].map((h, i) => el("th", {class: [null, "num", "date", "perm"][i], text: h})))),
+        el("tbody", null, up1, rows.length ? rows : el("tr", null, el("td", {colspan: 4, class: "muted", text: "Empty folder."}))))),
+      el("p", {class: "hint", text: NO_READ.test(dir) ? "Files here are kernel interfaces, not stored files; they're listed but not opened, since some never end." :
+        NO_OVERLAY.test(dir) ? `${entries.length} entries.` : `${entries.length} entries. "changed" and "added" mark what differs from the firmware image: those live in the writable area.`})),
+    viewer);
+}
+
 /* ---------- routing ---------- */
-const VIEWS = {status: viewStatus, wifi: viewWifi, network: viewNetwork, system: viewSystem, maintenance: viewMaintenance};
+const VIEWS = {status: viewStatus, wifi: viewWifi, network: viewNetwork, system: viewSystem, files: viewFiles, maintenance: viewMaintenance};
 let routeSeq = 0;
 async function route() {
-  const name = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "status", seq = ++routeSeq;
+  const tab = location.hash.slice(1).split("/")[0];    // "#files/etc/config": tab "files"
+  const name = VIEWS[tab] ? tab : "status", seq = ++routeSeq;
   timers.forEach(clearInterval); timers = [];
   document.querySelectorAll("#tabs a").forEach(a => a.toggleAttribute("aria-current", a.hash == "#" + name));
   const v = el("div", null, el("p", {class: "muted", text: "Loading…"}));

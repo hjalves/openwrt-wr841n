@@ -20,6 +20,7 @@ A single-page admin interface at **http://192.168.0.254/admin.html**, linked fro
 | **Network** | LAN address, netmask, gateway, DNS servers. Shows whether the DHCP server is on, and what the LAN is using right now (address, gateway, DNS, bridge ports, MAC). |
 | **System** | Hostname; time zone (the POSIX TZ string the router needs is worked out from it, not shown); root password; services (start, stop, restart, enable or disable at boot); processes; the system log with a filter, shown scrolled to its newest lines; restart. |
 | | **Processes**, like LuCI's: PID, user, CPU, memory and full command line, sortable by CPU, memory or PID, with a filter and optional kernel threads. CPU comes from BusyBox `top -b -n 2 -d 1` (the second reading; a single one always shows 0%). Hang up, Terminate and Kill send SIGHUP, SIGTERM or SIGKILL through procd's `system signal`, after a confirmation that warns specially for `procd`, `ubusd`, `rpcd`, `netifd` and `uhttpd`. |
+| **Files** | Read-only file browser (`#files/<path>`, so Back and bookmarks work): clickable path, a path box, and per folder name, size, date, permissions and link targets. Badges mark entries that are **changed** or **added** compared with the firmware image (from `/overlay/upper` and `/rom`). Links are followed when clicked. Text files up to 256 KB are shown inline; every regular file can be downloaded. Nothing is changed. |
 | **Backup & firmware** | Download a settings backup; restore one; firmware upgrade (upload with progress, the router's own image check, size and MD5, keep settings or not); factory reset. |
 
 Left out on purpose (still possible over SSH, or in LuCI while it's installed): firewall rules, the DHCP server's settings, static routes, IPv6, PPP and the package manager.
@@ -72,6 +73,13 @@ The router's current `WET0WEST,M3.5.0/1,M10.5.0` (Lisbon) is reproduced exactly.
 - **Text from the network:** everything that comes from the router or other devices (SSIDs from a scan, device names, log lines) is inserted as text, never as HTML.
 - **Backups contain `/etc/shadow` and the Wi-Fi password.** Keep the downloaded file private.
 
+## Files tab: how it reads
+
+- **Listing:** one `ls -lAe -- <folder>` through `file.exec` (rpcd's `file.list` gives only names and types). The arguments are passed as a list, never through a shell, so odd file names can't inject anything. For the badges, two more plain listings: `/overlay/upper/<folder>` and `/rom/<folder>`.
+- **Reading:** `file.read` with `base64`, because without it binary data stops at the first zero byte. rpcd refuses files of 256 KiB (262,144 bytes) or more, so larger downloads go in 192 KiB slices: `dd` copies one slice to `/tmp/.admin-download`, the page reads it and deletes it. cgi-io's own download isn't used: it truncates replies in 15.05 (see the backup download).
+- **Not read:** anything that isn't a regular file, and nothing under `/proc`, `/sys` or `/dev`. Those are listed but not opened, since some of them block forever.
+- **What a session can see:** everything root can, as before. The logged-in session could already run any command, so the tab adds no access.
+
 ## Install
 
 ```sh
@@ -97,6 +105,14 @@ Restarting rpcd logs out open LuCI sessions.
 
 Run against the real router, in headless Chromium (desktop, and a phone in dark mode). There were no script errors, and nothing overflowed on the phone.
 
+- **Files tab (2026-11-24),** in headless Chromium against the router:
+  - **Browsing:** folders by click, path box and Back.
+  - **Badges:** in `/etc/config`, `network`, `wireless`, `tvremote` and `weatherd` show as "added", the rest of the edited configs as "changed".
+  - **Viewing:** `/etc/banner` shown as text; `lanwatch` reported as binary.
+  - **Downloads:** `/etc/banner` (656 B), and the 359,596-byte C library in two slices in 0.7 s. Both had the router's own `md5sum`.
+  - **Links:** `/lib/libc.so.0` opens the library it points to; `/var` opens `/tmp`.
+  - **Refused or reported:** nothing in `/proc` is openable; a missing folder shows `ls`'s error; no slice file is left in `/tmp`.
+  - **Layout:** desktop, phone and 360 px without the page scrolling sideways; names don't break mid-word; dates wrap on narrow screens.
 - **Log scrolled to the end (fixed 2026-11-24):** the page attaches a tab only when all its data is in, and the System tab waits for `top`, which samples for a second. The log used to wait at most about 2 seconds (120 animation frames) to appear before scrolling, so a slower load left it at the top. Now the box is marked and scrolled right after the tab is attached. Checked in headless Chromium with the `top` call delayed by 4 s, so the tab took 5.4 s: the previous page showed the log at the top, the fixed one at the bottom; still at the bottom after filtering and Refresh.
 - **WDS toggle (2026-11-24):** shown checked to match the router's `wds=1`. In headless Chromium with saving stubbed out: unchanged → no change; unticked → only `wds=0`; ticked again → no change. The router's settings weren't touched.
 - **Login:** a wrong password is refused. Cancel and Esc on the login dialog lead back to the home page (checked 2026-11-19 in headless Chromium, no script errors). An expired session (destroyed on the router mid-use) brings up the login, then the interrupted action finishes.
