@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds the openwrt-wr841n firmware for the TP-Link TL-WR841N/ND v9 with the
-# OpenWrt 15.05.1 Image Builder: no LuCI/Lua, no IPv6, no PPP, no dnsmasq; with the
-# admin page, huawei-trafficd, lanwatch, tinymdns, weatherd and tvremote built in.
+# OpenWrt 15.05.1 Image Builder: no LuCI/Lua, no IPv6, no PPP, no dnsmasq, no firewall;
+# with the admin page, huawei-trafficd, lanwatch, tinymdns, weatherd, tvremote and gemgate
+# built in.
 #   firmware/build.sh [IMAGEBUILDER_DIR]
 # Output: firmware/bin/ (git-ignored). Nothing is flashed.
 set -e
@@ -13,7 +14,12 @@ OUT=$TOP/firmware/bin
 [ -d "$IB" ] || { echo "Image Builder not found: $IB" >&2; exit 1; }
 
 # Packages: the default set minus what this access point doesn't use, plus what our programs need.
+# No firewall: since 2026-11-19 the WAN port is part of the LAN and the only zone accepts
+# everything; the Huawei does routing, NAT and filtering. Dropping firewall, iptables and the
+# NAT helper also drops their libraries and netfilter/conntrack kernel modules.
+# uboot-envtools: this bootloader keeps no usable environment.
 PACKAGES="-dnsmasq -ip6tables -ppp -ppp-mod-pppoe -odhcpd -odhcp6c
+	-firewall -iptables -kmod-nf-nathelper -uboot-envtools
 	iw uhttpd uhttpd-mod-ubus rpcd rpcd-mod-file rpcd-mod-iwinfo rpcd-mod-rpcsys cgi-io libiwinfo"
 
 # Files baked into the read-only part of the image.

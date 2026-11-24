@@ -2,7 +2,8 @@
 # First boot of the openwrt-wr841n firmware (also after a sysupgrade that kept settings).
 # This image has no IPv6: stop the firewall and uhttpd from trying to use it, since the
 # kept configuration still asks for it.
-uci -q set firewall.@defaults[0].disable_ipv6=1 && uci commit firewall
+# (Only where a firewall is installed: images from 2026-11-24 on have none.)
+[ -e /etc/config/firewall ] && uci -q set firewall.@defaults[0].disable_ipv6=1 && uci commit firewall
 for o in listen_http listen_https; do
 	for v in '[::]:80' '[::]:443'; do uci -q del_list uhttpd.main.$o="$v"; done
 done
@@ -22,10 +23,12 @@ if [ -n "$wanif" ] && uci -q get network.lan >/dev/null; then
 		uci delete network.$s
 	done
 	uci commit network
-	for s in $(uci -X show firewall | grep -E "\.(src|dest)='wan'$|\.name='wan'$" | cut -d. -f2 | sort -u); do
-		uci delete firewall.$s
-	done
-	uci commit firewall
+	if [ -e /etc/config/firewall ]; then
+		for s in $(uci -X show firewall | grep -E "\.(src|dest)='wan'$|\.name='wan'$" | cut -d. -f2 | sort -u); do
+			uci delete firewall.$s
+		done
+		uci commit firewall
+	fi
 fi
 
 # After a factory reset, lan has OpenWrt's default address, 192.168.1.1, which nothing on

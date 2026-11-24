@@ -18,6 +18,12 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
 - **IPv6:** `kmod-ipv6`, `ip6tables`, `kmod-ip6tables`, `kmod-nf-ipt6`, `kmod-nf-conntrack6`, `odhcpd`, `odhcp6c`.
 - **PPP:** `ppp`, `ppp-mod-pppoe`, `kmod-ppp`, `kmod-pppoe`, `kmod-pppox`, `kmod-slhc`, `kmod-lib-crc-ccitt`.
 - **`dnsmasq`:** this router's DHCP server is off (the Huawei does DHCP). Without dnsmasq, the router sends its own DNS lookups straight to the LAN's DNS servers (1.1.1.1, 1.0.0.1): at boot, `/tmp/resolv.conf` points to the list netifd writes.
+- **Firewall, from the next build on (2026-11-24):** `firewall`, `iptables`, `libxtables`, `libip4tc`, `libip6tc`, `kmod-nf-conntrack`, `kmod-nf-nat`, `kmod-nf-nathelper`, `kmod-ipt-core`, `kmod-nf-ipt`, `kmod-ipt-conntrack`, `kmod-ipt-nat`.
+  - **Why:** since the WAN port joined the LAN (2026-11-19), the only zone, `lan`, accepted everything, with no rules, while the firewall still loaded about 30 kernel modules and tracked the router's own connections. The Huawei does the routing, NAT and filtering. Bridged traffic between LAN devices was never filtered here.
+  - **Result:** the image shrinks by one 64 KiB flash block (2,883,588 → 2,818,052 bytes), so the writable area grows from 1088 to 1152 KiB. It also saves the modules' RAM.
+  - **Related changes:** the image carries its own `/etc/sysctl.conf`, OpenWrt's without the netfilter, bridge-netfilter and IPv6 keys, which would otherwise be reported as unknown at every boot (the IPv6 ones already were). The first-boot script only touches the firewall config where one exists. After a "keep settings" upgrade from the current firmware, the old `/etc/config/firewall` stays behind unused; it can be deleted.
+  - **Left as is:** `lib/netifd/dhcp.script` still calls `fw3`, but only for IPv6-in-IPv4 (6rd) tunnels, which this router never sets up. The admin page lists `firewall` among the services it warns about stopping; with no such service it just never appears.
+- **`uboot-envtools`, from the next build on:** this TP-Link bootloader keeps no usable environment, and nothing used it.
 
 **Added:**
 - **Packages:** `rpcd-mod-file`, `rpcd-mod-iwinfo`, `rpcd-mod-rpcsys` and `cgi-io`, for the [admin page](../admin/README.md).
@@ -30,6 +36,8 @@ A custom OpenWrt 15.05.1 image for this router, built with the official **Image 
 - **`/etc/uci-defaults/99-openwrt-wr841n`:** runs once at first boot. There's no IPv6 any more, so it:
   - sets the firewall's `disable_ipv6`;
   - removes uhttpd's `[::]` listeners.
+
+  Since 2026-11-24 it skips the firewall settings where there's no firewall config (images without the firewall).
 
   Since 2026-11-19 it also makes the **WAN port a fifth LAN port**, as the router has been set up by hand since that day: the powerline to the Huawei is plugged into it. If the config still has a `wan` interface, the script:
   - adds its port (`eth1`) to the `lan` bridge;
@@ -76,6 +84,11 @@ The daemons are taken from the committed binaries. They are byte-identical to th
   - the image's factory firewall with that network config: the same result.
 
   A second run changed nothing further, and the real configs were untouched. With the address step added, a factory-like config (`192.168.1.1`, no gateway or DNS) came out as `192.168.0.254` with gateway and DNS, and a kept custom address (`192.168.0.250`) was left alone.
+
+- **Without the firewall (2026-11-24):**
+  - **Package list:** the built image's list differs from the running router's by exactly the 13 removed packages, with none added.
+  - **Leftover references:** none in the image, apart from the `dhcp.script` 6rd call and the admin page's service list noted above.
+  - **First-boot script:** with no firewall config and a factory-like network, it ran without errors and gave `eth0 eth1` at `192.168.0.254`. The current config was again left unchanged.
 
 **Not checked, because it needs the real hardware:** booting the image. In particular:
 - whether the firewall (fw3) starts cleanly without IPv6 (it is told not to use it);
