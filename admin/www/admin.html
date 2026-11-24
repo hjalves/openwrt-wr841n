@@ -149,10 +149,11 @@ function every(ms, fn) {
   const h = setInterval(() => { if (!document.hidden) fn().catch(() => {}); }, ms);
   timers.push(h);
 }
-// Scroll a box to its end; on first load the view isn't on screen yet, so wait until it is.
-function toBottom(e, tries = 120) {
+// Scroll a box to its end. While a view is still loading it isn't on screen yet (route()
+// attaches it only when all its data is in), so mark the box and let route() scroll it then.
+function toBottom(e) {
   if (e.isConnected && e.clientHeight) e.scrollTop = e.scrollHeight;
-  else if (tries) requestAnimationFrame(() => toBottom(e, tries - 1));
+  else e.dataset.toEnd = "";
 }
 const fmtUp = s => { const d = s / 86400 | 0, h = s % 86400 / 3600 | 0, m = s % 3600 / 60 | 0; return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
 const fmtMB = b => (b / 1048576).toLocaleString(undefined, {maximumFractionDigits: 1}) + " MB";
@@ -813,7 +814,10 @@ async function route() {
   try {
     const body = el("div");
     await VIEWS[name](body);
-    if (seq == routeSeq) v.replaceChildren(body);
+    if (seq == routeSeq) {
+      v.replaceChildren(body);
+      body.querySelectorAll("[data-to-end]").forEach(x => { x.scrollTop = x.scrollHeight; delete x.dataset.toEnd; });
+    }
   } catch (e) { if (seq == routeSeq) v.replaceChildren(card("Couldn't load this page", errBox(e))); }
 }
 $("logout").onclick = async () => {
